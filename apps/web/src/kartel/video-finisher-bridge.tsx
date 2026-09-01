@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { processMediaAssets } from "@/media/processing";
+import type { MediaAsset } from "@/media/types";
 import { storageService } from "@/services/storage/service";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { toElementDurationTicks } from "@/timeline/creation";
@@ -361,6 +362,7 @@ export function KartelVideoFinisherBridge({
 		"nonce" | "projectId" | "revision" | "operationId"
 	> | null>(null);
 	const applyingRef = useRef(false);
+	const sourceLoadsRef = useRef(new Map<string, Promise<MediaAsset>>());
 
 	useEffect(() => {
 		if (!hostOrigin || window.parent === window) return;
@@ -394,17 +396,33 @@ export function KartelVideoFinisherBridge({
 				.getAssets()
 				.find((asset) => asset.id === versionId);
 			if (existing) return existing;
-			const file = await sourceFile(project);
-			const [processed] = await processMediaAssets({ files: [file] });
-			if (!processed)
-				throw new Error("OpenCut could not decode the source version.");
-			const created = await editor.media.addMediaAsset({
-				projectId,
-				asset: { ...processed, id: versionId },
-			});
-			if (!created)
-				throw new Error("OpenCut could not retain the source version.");
-			return created;
+			const pending = sourceLoadsRef.current.get(versionId);
+			if (pending) return pending;
+			const loading = (async () => {
+				const file = await sourceFile(project);
+				const [processed] = await processMediaAssets({ files: [file] });
+				if (!processed)
+					throw new Error("OpenCut could not decode the source version.");
+				const afterProcessing = editor.media
+					.getAssets()
+					.find((asset) => asset.id === versionId);
+				if (afterProcessing) return afterProcessing;
+				const created = await editor.media.addMediaAsset({
+					projectId,
+					asset: { ...processed, id: versionId },
+				});
+				if (!created)
+					throw new Error("OpenCut could not retain the source version.");
+				return created;
+			})();
+			sourceLoadsRef.current.set(versionId, loading);
+			try {
+				return await loading;
+			} finally {
+				if (sourceLoadsRef.current.get(versionId) === loading) {
+					sourceLoadsRef.current.delete(versionId);
+				}
+			}
 		};
 
 		const load = async (message: VideoFinisherHostMessage) => {

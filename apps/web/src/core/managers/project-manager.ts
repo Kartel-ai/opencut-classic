@@ -219,7 +219,9 @@ export class ProjectManager {
 				}
 			}
 		} catch (error) {
-			console.error("Failed to load project:", error);
+			const missing = error instanceof Error &&
+				(error.message.includes("not found") || error.message.includes("does not exist"));
+			if (!missing) console.error("Failed to load project:", error);
 			throw error;
 		} finally {
 			this.isLoading = false;
