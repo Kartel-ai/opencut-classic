@@ -40,8 +40,11 @@ ENV FREESOUND_API_KEY=$FREESOUND_API_KEY
 WORKDIR /app/apps/web
 RUN bun run build
 
-# Production image
-FROM base AS runner
+# The compiled editor imports WebAssembly during server rendering. Bun 1.2.18
+# starts the standalone server but lacks WebAssembly.instantiateStreaming there,
+# so the first editor request fails. Keep Bun for the frozen install/build and
+# use Node for the production Next.js runtime.
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -63,4 +66,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["bun", "apps/web/server.js"]
+CMD ["node", "apps/web/server.js"]

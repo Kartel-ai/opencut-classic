@@ -5,7 +5,6 @@ import { Toaster } from "../components/ui/sonner";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { baseMetaData } from "./metadata";
 import { BotIdClient } from "botid/client";
-import { webEnv } from "@/env/web";
 import { Inter } from "next/font/google";
 import { RouteAnalytics } from "@/components/route-analytics";
 
@@ -47,7 +46,7 @@ export default function RootLayout({
 				>
 					<TooltipProvider>
 						<Toaster />
-						<RouteAnalytics disabled={webEnv.NODE_ENV === "development"} />
+						<RouteAnalytics disabled={process.env.NODE_ENV === "development"} />
 						{children}
 					</TooltipProvider>
 				</ThemeProvider>
