@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildVideoFinisherBridgeMessage,
 	isKartelVideoFinisherRoute,
+	shouldShowStandaloneEditorChrome,
 	VIDEO_FINISHER_BRIDGE,
 	VIDEO_FINISHER_BRIDGE_VERSION,
 } from "../video-finisher-protocol";
@@ -45,6 +46,13 @@ describe("isKartelVideoFinisherRoute", () => {
 		expect(isKartelVideoFinisherRoute("/kartel/editor/project-1/")).toBe(true);
 		expect(isKartelVideoFinisherRoute("/editor/project-1")).toBe(false);
 		expect(isKartelVideoFinisherRoute("/kartel/editorial/project-1")).toBe(false);
+	});
+
+	test("removes standalone editor chrome only from the exact embedded route", () => {
+		expect(shouldShowStandaloneEditorChrome("/kartel/editor/project-1")).toBe(false);
+		expect(shouldShowStandaloneEditorChrome("/kartel/editor/project-1/")).toBe(false);
+		expect(shouldShowStandaloneEditorChrome("/editor/project-1")).toBe(true);
+		expect(shouldShowStandaloneEditorChrome("/kartel/editorial/project-1")).toBe(true);
 	});
 });
 

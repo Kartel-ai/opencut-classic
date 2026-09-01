@@ -35,7 +35,10 @@ import {
 	getBookmarkPreviewOverlaySource,
 } from "@/timeline/bookmarks/index";
 import { KartelVideoFinisherBridge } from "@/kartel/video-finisher-bridge";
-import { isKartelVideoFinisherRoute } from "@/kartel/video-finisher-protocol";
+import {
+	isKartelVideoFinisherRoute,
+	shouldShowStandaloneEditorChrome,
+} from "@/kartel/video-finisher-protocol";
 
 export default function Editor() {
 	const params = useParams();
@@ -44,6 +47,7 @@ export default function Editor() {
 		? (params.project_id[0] ?? "")
 		: (params.project_id ?? "");
 	const isKartelEmbed = isKartelVideoFinisherRoute(pathname);
+	const showStandaloneChrome = shouldShowStandaloneEditorChrome(pathname);
 
 	return (
 		<MobileGate>
@@ -53,13 +57,13 @@ export default function Editor() {
 				) : null}
 				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
 					<DegradedRendererBanner />
-					<EditorHeader />
+					{showStandaloneChrome ? <EditorHeader /> : null}
 					<div className="min-h-0 min-w-0 flex-1">
 						<EditorLayout />
 					</div>
-					{isKartelEmbed ? null : <Onboarding />}
+					{showStandaloneChrome ? <Onboarding /> : null}
 					<MigrationDialog />
-					{isKartelEmbed ? null : <ChangelogNotification />}
+					{showStandaloneChrome ? <ChangelogNotification /> : null}
 				</div>
 			</EditorProvider>
 		</MobileGate>
