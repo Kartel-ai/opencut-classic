@@ -19,11 +19,11 @@ export class MediaManager {
 		asset,
 	}: {
 		projectId: string;
-		asset: Omit<MediaAsset, "id">;
+		asset: Omit<MediaAsset, "id"> & { id?: string };
 	}): Promise<MediaAsset | null> {
 		const newAsset: MediaAsset = {
 			...asset,
-			id: generateUUID(),
+			id: asset.id ?? generateUUID(),
 		};
 
 		this.assets = [...this.assets, newAsset];
@@ -73,11 +73,12 @@ export class MediaManager {
 						assetId: uniqueIds[0],
 					})
 				: new BatchCommand(
-						uniqueIds.map((id) =>
-							new RemoveMediaAssetCommand({
-								projectId,
-								assetId: id,
-							}),
+						uniqueIds.map(
+							(id) =>
+								new RemoveMediaAssetCommand({
+									projectId,
+									assetId: id,
+								}),
 						),
 					);
 

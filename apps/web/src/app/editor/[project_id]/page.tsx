@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, usePathname } from "next/navigation";
 import {
 	ResizablePanelGroup,
 	ResizablePanel,
@@ -34,23 +34,32 @@ import {
 	bookmarkNotesPreviewOverlay,
 	getBookmarkPreviewOverlaySource,
 } from "@/timeline/bookmarks/index";
+import { KartelVideoFinisherBridge } from "@/kartel/video-finisher-bridge";
+import { isKartelVideoFinisherRoute } from "@/kartel/video-finisher-protocol";
 
 export default function Editor() {
 	const params = useParams();
-	const projectId = params.project_id as string;
+	const pathname = usePathname();
+	const projectId = Array.isArray(params.project_id)
+		? (params.project_id[0] ?? "")
+		: (params.project_id ?? "");
+	const isKartelEmbed = isKartelVideoFinisherRoute(pathname);
 
 	return (
 		<MobileGate>
-			<EditorProvider projectId={projectId}>
+			<EditorProvider projectId={projectId} preserveProjectId={isKartelEmbed}>
+				{isKartelEmbed ? (
+					<KartelVideoFinisherBridge projectId={projectId} />
+				) : null}
 				<div className="bg-background flex h-screen w-screen flex-col overflow-hidden">
 					<DegradedRendererBanner />
 					<EditorHeader />
 					<div className="min-h-0 min-w-0 flex-1">
 						<EditorLayout />
 					</div>
-					<Onboarding />
+					{isKartelEmbed ? null : <Onboarding />}
 					<MigrationDialog />
-					<ChangelogNotification />
+					{isKartelEmbed ? null : <ChangelogNotification />}
 				</div>
 			</EditorProvider>
 		</MobileGate>

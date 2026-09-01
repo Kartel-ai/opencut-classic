@@ -5,6 +5,7 @@ import type {
 	TProjectSortKey,
 	TProjectSortOption,
 	TProjectSettings,
+	TSortOrder,
 	TTimelineViewState,
 } from "@/project/types";
 import type { ExportOptions, ExportResult, ExportState } from "@/export";
@@ -15,7 +16,10 @@ import { UpdateProjectSettingsCommand } from "@/commands/project";
 import { DEFAULT_BACKGROUND_COLOR } from "@/background/color";
 import { DEFAULT_CANVAS_SIZE } from "@/canvas/sizes";
 import { DEFAULT_FPS } from "@/fps/defaults";
-import { buildDefaultScene, getProjectDurationFromScenes } from "@/timeline/scenes";
+import {
+	buildDefaultScene,
+	getProjectDurationFromScenes,
+} from "@/timeline/scenes";
 import { buildScene } from "@/services/renderer/scene-builder";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import {
@@ -29,6 +33,20 @@ import { DEFAULTS } from "@/timeline/defaults";
 import { getElementFontFamilies } from "@/timeline/element-utils";
 import { getRaisedProjectFpsForImportedMedia } from "@/fps/utils";
 import type { MediaAsset } from "@/media/types";
+
+const PROJECT_SORT_PARTS: Record<
+	TProjectSortOption,
+	readonly [TProjectSortKey, TSortOrder]
+> = {
+	"createdAt-asc": ["createdAt", "asc"],
+	"createdAt-desc": ["createdAt", "desc"],
+	"updatedAt-asc": ["updatedAt", "asc"],
+	"updatedAt-desc": ["updatedAt", "desc"],
+	"name-asc": ["name", "asc"],
+	"name-desc": ["name", "desc"],
+	"duration-asc": ["duration", "asc"],
+	"duration-desc": ["duration", "desc"],
+};
 
 export interface MigrationState {
 	isMigrating: boolean;
@@ -79,11 +97,17 @@ export class ProjectManager {
 		await this.storageMigrationPromise;
 	}
 
-	async createNewProject({ name }: { name: string }): Promise<string> {
+	async createNewProject({
+		name,
+		id,
+	}: {
+		name: string;
+		id?: string;
+	}): Promise<string> {
 		const mainScene = buildDefaultScene({ name: "Main scene", isMain: true });
 		const newProject: TProject = {
 			metadata: {
-				id: generateUUID(),
+				id: id ?? generateUUID(),
 				name,
 				duration: getProjectDurationFromScenes({ scenes: [mainScene] }),
 				createdAt: new Date(),
@@ -555,10 +579,7 @@ export class ProjectManager {
 			project.name.toLowerCase().includes(searchQuery.toLowerCase()),
 		);
 
-		const [key, order] = sortOption.split("-") as [
-			TProjectSortKey,
-			"asc" | "desc",
-		];
+		const [key, order] = PROJECT_SORT_PARTS[sortOption];
 
 		const sortedProjects = [...filteredProjects].sort((a, b) => {
 			const aValue = a[key];

@@ -13,6 +13,7 @@ import { mediaTimeFromSeconds, ZERO_MEDIA_TIME } from "@/wasm";
 import {
 	analyzeCrossfadeSelection,
 	buildCrossfadePlan,
+	CROSSFADE_DURATION_LIMITS,
 } from "@/transitions/crossfade";
 
 export function TransitionsView() {
@@ -72,7 +73,7 @@ export function TransitionsView() {
 				}),
 			});
 			toast.success("Crossfade applied", {
-				description: `${durationSeconds.toFixed(1)}s overlap${includeAudio ? " with source-audio fade" : ""}.`,
+				description: `${durationSeconds}s overlap${includeAudio ? " with source-audio fade" : ""}.`,
 			});
 		} catch (error) {
 			toast.error(
@@ -106,8 +107,8 @@ export function TransitionsView() {
 						<Input
 							id="crossfade-duration"
 							type="number"
-							min="0.1"
-							max="3"
+							min={CROSSFADE_DURATION_LIMITS.minSeconds}
+							max={CROSSFADE_DURATION_LIMITS.maxSeconds}
 							step="0.1"
 							size="sm"
 							value={durationInput}
@@ -139,7 +140,7 @@ export function TransitionsView() {
 					aria-live="polite"
 				>
 					{analysis.ok
-						? `${analysis.outgoing.element.name} → ${analysis.incoming.element.name} is ready. The incoming clip will move onto a new video layer.`
+						? `${analysis.outgoing.element.name} → ${analysis.incoming.element.name} is ready. The incoming clip will move onto a new video layer and following clips will stay continuous.`
 						: analysis.reason}
 				</div>
 

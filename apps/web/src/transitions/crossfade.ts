@@ -3,7 +3,12 @@ import type {
 	ScalarAnimationChannel,
 } from "@/animation/types";
 import { isLeafChannelData } from "@/animation/channel-data";
-import { mediaTime, type MediaTime } from "@/wasm";
+import {
+	isScalarChannel,
+	normalizeScalarChannel,
+} from "@/animation/interpolation";
+import { resolveAnimationPathValueAtTime } from "@/animation/resolve";
+import { mediaTime, TICKS_PER_SECOND, type MediaTime } from "@/wasm";
 import { VOLUME_DB_MIN } from "@/timeline/audio-constants";
 import type {
 	ElementRef,
@@ -15,13 +20,32 @@ import { buildEmptyTrack } from "@/timeline/placement";
 
 export type CrossfadeDirection = "in" | "out";
 
+export const CROSSFADE_DURATION_LIMITS = {
+	minSeconds: 0.1,
+	maxSeconds: 3,
+} as const;
+
+const MIN_CROSSFADE_DURATION = mediaTime({
+	ticks: Math.round(CROSSFADE_DURATION_LIMITS.minSeconds * TICKS_PER_SECOND),
+});
+const MAX_CROSSFADE_DURATION = mediaTime({
+	ticks: Math.round(CROSSFADE_DURATION_LIMITS.maxSeconds * TICKS_PER_SECOND),
+});
+
 export type CrossfadeAnalysis =
 	| { ok: false; reason: string }
 	| {
 			ok: true;
-			outgoing: { trackId: string; element: VideoElement };
-			incoming: { trackId: string; element: VideoElement };
-			sourceTrack: VideoTrack;
+			outgoing: {
+				trackId: string;
+				track: VideoTrack;
+				element: VideoElement;
+			};
+			incoming: {
+				trackId: string;
+				track: VideoTrack;
+				element: VideoElement;
+			};
 	  };
 
 export interface CrossfadePlan {
@@ -30,15 +54,59 @@ export interface CrossfadePlan {
 	createdTrackId: string;
 }
 
-function hasAnimationKeys({
+function getCrossfadeWindow({
+	direction,
+	duration,
+	elementDuration,
+}: {
+	direction: CrossfadeDirection;
+	duration: MediaTime;
+	elementDuration: MediaTime;
+}): { startTime: MediaTime; endTime: MediaTime } {
+	return direction === "in"
+		? { startTime: mediaTime({ ticks: 0 }), endTime: duration }
+		: {
+				startTime: mediaTime({ ticks: elementDuration - duration }),
+				endTime: elementDuration,
+			};
+}
+
+function hasAnimationConflict({
 	element,
 	path,
+	direction,
+	duration,
 }: {
 	element: VideoElement;
 	path: "opacity" | "volume";
+	direction: CrossfadeDirection;
+	duration: MediaTime;
 }): boolean {
 	const channel = element.animations?.[path];
-	return isLeafChannelData(channel) && channel.keys.length > 0;
+	if (!channel) return false;
+	if (!isLeafChannelData(channel)) return true;
+	if (channel.keys.length === 0) return false;
+	if (!isScalarChannel(channel)) return true;
+
+	const { startTime, endTime } = getCrossfadeWindow({
+		direction,
+		duration,
+		elementDuration: element.duration,
+	});
+	if (
+		channel.keys.some(
+			(key) =>
+				key.time < 0 ||
+				key.time > element.duration ||
+				(key.time >= startTime && key.time <= endTime),
+		)
+	) {
+		return true;
+	}
+
+	return direction === "in"
+		? channel.extrapolation?.before === "linear"
+		: channel.extrapolation?.after === "linear";
 }
 
 export function analyzeCrossfadeSelection({
@@ -83,46 +151,50 @@ export function analyzeCrossfadeSelection({
 		resolved.push({ trackId: track.id, track, element });
 	}
 
-	if (resolved[0].track.id !== resolved[1].track.id) {
-		return {
-			ok: false,
-			reason: "Select two adjacent clips on the same video track.",
-		};
-	}
-
 	const ordered = resolved
-		.map((item) => ({
-			trackId: item.trackId,
-			element: item.element,
-		}))
+		.map((item) => ({ ...item }))
 		.sort((a, b) => a.element.startTime - b.element.startTime);
 	const [outgoing, incoming] = ordered;
-	const sourceTrack = resolved[0].track;
-	const orderedTrackElements = [...sourceTrack.elements].sort((a, b) => {
-		if (a.startTime !== b.startTime) return a.startTime - b.startTime;
-		return a.id.localeCompare(b.id);
-	});
-	const outgoingIndex = orderedTrackElements.findIndex(
-		(element) => element.id === outgoing.element.id,
-	);
-	const incomingIndex = orderedTrackElements.findIndex(
-		(element) => element.id === incoming.element.id,
-	);
 	const outgoingEnd = outgoing.element.startTime + outgoing.element.duration;
 
-	if (
-		outgoingIndex < 0 ||
-		incomingIndex !== outgoingIndex + 1 ||
-		outgoingEnd !== incoming.element.startTime
-	) {
+	if (outgoingEnd !== incoming.element.startTime) {
 		return {
 			ok: false,
-			reason: "The selected clips must touch with no clip or gap between them.",
+			reason: "The selected clips must touch with no gap between them.",
 		};
 	}
 
-	if (duration <= 0) {
-		return { ok: false, reason: "Choose a crossfade duration above zero." };
+	if (outgoing.trackId === incoming.trackId) {
+		const orderedTrackElements = [...outgoing.track.elements].sort((a, b) => {
+			if (a.startTime !== b.startTime) return a.startTime - b.startTime;
+			return a.id.localeCompare(b.id);
+		});
+		const outgoingIndex = orderedTrackElements.findIndex(
+			(element) => element.id === outgoing.element.id,
+		);
+		const incomingIndex = orderedTrackElements.findIndex(
+			(element) => element.id === incoming.element.id,
+		);
+		if (outgoingIndex < 0 || incomingIndex !== outgoingIndex + 1) {
+			return {
+				ok: false,
+				reason: "The selected clips must be consecutive on their track.",
+			};
+		}
+	}
+
+	if (duration < MIN_CROSSFADE_DURATION) {
+		return {
+			ok: false,
+			reason: `Choose a crossfade of at least ${CROSSFADE_DURATION_LIMITS.minSeconds} seconds.`,
+		};
+	}
+
+	if (duration > MAX_CROSSFADE_DURATION) {
+		return {
+			ok: false,
+			reason: `Choose a crossfade no longer than ${CROSSFADE_DURATION_LIMITS.maxSeconds} seconds.`,
+		};
 	}
 
 	if (
@@ -138,19 +210,25 @@ export function analyzeCrossfadeSelection({
 	const protectedPaths = includeAudio
 		? (["opacity", "volume"] as const)
 		: (["opacity"] as const);
+	const transitionElements = [
+		{ ...outgoing, direction: "out" as const },
+		{ ...incoming, direction: "in" as const },
+	];
 	if (
-		ordered.some(({ element }) =>
-			protectedPaths.some((path) => hasAnimationKeys({ element, path })),
+		transitionElements.some(({ element, direction }) =>
+			protectedPaths.some((path) =>
+				hasAnimationConflict({ element, path, direction, duration }),
+			),
 		)
 	) {
 		return {
 			ok: false,
 			reason:
-				"Remove existing opacity or volume keyframes from these clips before applying a crossfade.",
+				"Remove opacity or volume keyframes inside the transition ranges before applying a crossfade.",
 		};
 	}
 
-	return { ok: true, outgoing, incoming, sourceTrack };
+	return { ok: true, outgoing, incoming };
 }
 
 export function buildCrossfadePlan({
@@ -176,7 +254,7 @@ export function buildCrossfadePlan({
 		throw new Error(analysis.reason);
 	}
 
-	const { outgoing, incoming, sourceTrack } = analysis;
+	const { outgoing, incoming } = analysis;
 	const createdTrackId = idFactory();
 	const buildKeyframeIds = () => [idFactory(), idFactory()] as const;
 	const buildAnimations = ({
@@ -220,37 +298,78 @@ export function buildCrossfadePlan({
 		startTime: overlapStartTime,
 		animations: buildAnimations({ direction: "in", element: incoming.element }),
 	};
-	const nextSourceTrack: VideoTrack = {
-		...sourceTrack,
-		elements: sourceTrack.elements
-			.filter((element) => element.id !== incoming.element.id)
-			.map((element) =>
+	const incomingOriginalEnd = mediaTime({
+		ticks: incoming.element.startTime + incoming.element.duration,
+	});
+	const shiftFollowingElement = <
+		TElement extends VideoTrack["elements"][number],
+	>(
+		element: TElement,
+	): TElement =>
+		element.startTime >= incomingOriginalEnd
+			? ({
+					...element,
+					startTime: mediaTime({ ticks: element.startTime - duration }),
+				} as TElement)
+			: element;
+
+	let nextTracks = tracks;
+	if (outgoing.trackId === incoming.trackId) {
+		const nextSourceTrack: VideoTrack = {
+			...incoming.track,
+			elements: incoming.track.elements.flatMap((element) => {
+				if (element.id === incoming.element.id) return [];
+				if (element.id === outgoing.element.id) return [nextOutgoing];
+				return [shiftFollowingElement(element)];
+			}),
+		};
+		nextTracks = replaceVideoTrack({
+			tracks: nextTracks,
+			track: nextSourceTrack,
+		});
+	} else {
+		const nextOutgoingTrack: VideoTrack = {
+			...outgoing.track,
+			elements: outgoing.track.elements.map((element) =>
 				element.id === outgoing.element.id ? nextOutgoing : element,
 			),
-	};
+		};
+		const nextIncomingTrack: VideoTrack = {
+			...incoming.track,
+			elements: incoming.track.elements.flatMap((element) =>
+				element.id === incoming.element.id
+					? []
+					: [shiftFollowingElement(element)],
+			),
+		};
+		nextTracks = replaceVideoTrack({
+			tracks: nextTracks,
+			track: nextOutgoingTrack,
+		});
+		nextTracks = replaceVideoTrack({
+			tracks: nextTracks,
+			track: nextIncomingTrack,
+		});
+	}
 	const crossfadeTrack: VideoTrack = {
 		...buildEmptyTrack({ id: createdTrackId, type: "video" }),
 		name: "Crossfade overlay",
 		elements: [nextIncoming],
 	};
 
-	let nextTracks: SceneTracks;
-	if (tracks.main.id === sourceTrack.id) {
-		nextTracks = {
-			...tracks,
-			overlay: [...tracks.overlay, crossfadeTrack],
-			main: nextSourceTrack,
-		};
-	} else {
-		const sourceIndex = tracks.overlay.findIndex(
-			(track) => track.id === sourceTrack.id,
-		);
-		const updatedOverlay = tracks.overlay.map((track) =>
-			track.id === sourceTrack.id ? nextSourceTrack : track,
-		);
-		updatedOverlay.splice(sourceIndex, 0, crossfadeTrack);
-		nextTracks = { ...tracks, overlay: updatedOverlay };
-	}
+	const selectedOverlayIndices = [outgoing.trackId, incoming.trackId].flatMap(
+		(trackId) => {
+			const index = tracks.overlay.findIndex((track) => track.id === trackId);
+			return index >= 0 ? [index] : [];
+		},
+	);
+	const crossfadeTrackIndex =
+		selectedOverlayIndices.length > 0
+			? Math.min(...selectedOverlayIndices)
+			: nextTracks.overlay.length;
+	const nextOverlay = [...nextTracks.overlay];
+	nextOverlay.splice(crossfadeTrackIndex, 0, crossfadeTrack);
+	nextTracks = { ...nextTracks, overlay: nextOverlay };
 
 	return {
 		tracks: nextTracks,
@@ -262,37 +381,108 @@ export function buildCrossfadePlan({
 	};
 }
 
+function replaceVideoTrack({
+	tracks,
+	track,
+}: {
+	tracks: SceneTracks;
+	track: VideoTrack;
+}): SceneTracks {
+	if (tracks.main.id === track.id) {
+		return { ...tracks, main: track };
+	}
+
+	return {
+		...tracks,
+		overlay: tracks.overlay.map((candidate) =>
+			candidate.id === track.id ? track : candidate,
+		),
+	};
+}
+
 function buildLinearChannel({
 	startTime,
 	endTime,
 	startValue,
 	endValue,
 	keyframeIds,
+	existingChannel,
+	endSegmentToNext = "linear",
 }: {
 	startTime: MediaTime;
 	endTime: MediaTime;
 	startValue: number;
 	endValue: number;
 	keyframeIds: readonly [string, string];
+	existingChannel?: ScalarAnimationChannel;
+	endSegmentToNext?: "linear" | "step";
 }): ScalarAnimationChannel {
-	return {
-		keys: [
-			{
-				id: keyframeIds[0],
-				time: startTime,
-				value: startValue,
-				segmentToNext: "linear",
-				tangentMode: "auto",
-			},
-			{
-				id: keyframeIds[1],
-				time: endTime,
-				value: endValue,
-				segmentToNext: "linear",
-				tangentMode: "auto",
-			},
-		],
-	};
+	const existingKeys = existingChannel?.keys ?? [];
+	if (
+		existingKeys.some((key) => key.time >= startTime && key.time <= endTime)
+	) {
+		throw new Error("Crossfade would overwrite existing animation keyframes");
+	}
+
+	const preservedKeys = existingKeys.map((key, index) => {
+		const isLastKeyBeforeWindow =
+			key.time < startTime &&
+			existingKeys
+				.slice(index + 1)
+				.every((candidate) => candidate.time >= startTime);
+		return isLastKeyBeforeWindow
+			? { ...key, segmentToNext: "step" as const, rightHandle: undefined }
+			: key;
+	});
+
+	return normalizeScalarChannel({
+		channel: {
+			...existingChannel,
+			keys: [
+				...preservedKeys,
+				{
+					id: keyframeIds[0],
+					time: startTime,
+					value: startValue,
+					segmentToNext: "linear",
+					tangentMode: "auto",
+				},
+				{
+					id: keyframeIds[1],
+					time: endTime,
+					value: endValue,
+					segmentToNext: endSegmentToNext,
+					tangentMode: "auto",
+				},
+			],
+		},
+	});
+}
+
+function getExistingScalarChannel({
+	animations,
+	path,
+}: {
+	animations: ElementAnimations | undefined;
+	path: "opacity" | "volume";
+}): ScalarAnimationChannel | undefined {
+	const channel = animations?.[path];
+	if (!channel) return undefined;
+	if (!isLeafChannelData(channel)) {
+		throw new Error(`Crossfade cannot merge composite ${path} animation data`);
+	}
+	if (channel.keys.length === 0) {
+		return {
+			keys: [],
+			...("extrapolation" in channel && channel.extrapolation
+				? { extrapolation: channel.extrapolation }
+				: {}),
+		};
+	}
+	if (!isScalarChannel(channel)) {
+		throw new Error(`Crossfade cannot merge non-scalar ${path} animation data`);
+	}
+	return channel;
 }
 
 export function buildCrossfadeAnimations({
@@ -319,28 +509,53 @@ export function buildCrossfadeAnimations({
 		throw new Error("Crossfade duration must fit within the clip duration");
 	}
 
-	const startTime = direction === "in" ? 0 : elementDuration - duration;
-	const endTime = direction === "in" ? duration : elementDuration;
-	const startOpacity = direction === "in" ? 0 : baseOpacity;
-	const endOpacity = direction === "in" ? baseOpacity : 0;
+	const { startTime, endTime } = getCrossfadeWindow({
+		direction,
+		duration,
+		elementDuration,
+	});
+	const opacityAtBoundary = resolveAnimationPathValueAtTime({
+		animations: existingAnimations,
+		propertyPath: "opacity",
+		localTime: direction === "in" ? endTime : startTime,
+		fallbackValue: baseOpacity,
+	});
+	const startOpacity = direction === "in" ? 0 : opacityAtBoundary;
+	const endOpacity = direction === "in" ? opacityAtBoundary : 0;
 	const animations: ElementAnimations = {
 		...existingAnimations,
 		opacity: buildLinearChannel({
-			startTime: mediaTime({ ticks: startTime }),
-			endTime: mediaTime({ ticks: endTime }),
+			startTime,
+			endTime,
 			startValue: startOpacity,
 			endValue: endOpacity,
 			keyframeIds: keyframeIds.opacity,
+			existingChannel: getExistingScalarChannel({
+				animations: existingAnimations,
+				path: "opacity",
+			}),
+			endSegmentToNext: direction === "in" ? "step" : "linear",
 		}),
 	};
 
 	if (baseVolume !== undefined && keyframeIds.volume) {
+		const volumeAtBoundary = resolveAnimationPathValueAtTime({
+			animations: existingAnimations,
+			propertyPath: "volume",
+			localTime: direction === "in" ? endTime : startTime,
+			fallbackValue: baseVolume,
+		});
 		animations.volume = buildLinearChannel({
-			startTime: mediaTime({ ticks: startTime }),
-			endTime: mediaTime({ ticks: endTime }),
-			startValue: direction === "in" ? VOLUME_DB_MIN : baseVolume,
-			endValue: direction === "in" ? baseVolume : VOLUME_DB_MIN,
+			startTime,
+			endTime,
+			startValue: direction === "in" ? VOLUME_DB_MIN : volumeAtBoundary,
+			endValue: direction === "in" ? volumeAtBoundary : VOLUME_DB_MIN,
 			keyframeIds: keyframeIds.volume,
+			existingChannel: getExistingScalarChannel({
+				animations: existingAnimations,
+				path: "volume",
+			}),
+			endSegmentToNext: direction === "in" ? "step" : "linear",
 		});
 	}
 

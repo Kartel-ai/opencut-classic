@@ -17,10 +17,15 @@ import {
 
 interface EditorProviderProps {
 	projectId: string;
+	preserveProjectId?: boolean;
 	children: React.ReactNode;
 }
 
-export function EditorProvider({ projectId, children }: EditorProviderProps) {
+export function EditorProvider({
+	projectId,
+	preserveProjectId = false,
+	children,
+}: EditorProviderProps) {
 	const activeProject = useEditor((e) => e.project.getActiveOrNull());
 	const router = useRouter();
 	const [isLoading, setIsLoading] = useState(true);
@@ -58,8 +63,14 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 					try {
 						const newProjectId = await editor.project.createNewProject({
 							name: "Untitled Project",
+							id: preserveProjectId ? projectId : undefined,
 						});
-						router.replace(`/editor/${newProjectId}`);
+						if (preserveProjectId) {
+							setIsLoading(false);
+							loadFontAtlas();
+						} else {
+							router.replace(`/editor/${newProjectId}`);
+						}
 					} catch (_createErr) {
 						setError("Failed to create project");
 						setIsLoading(false);
@@ -85,7 +96,7 @@ export function EditorProvider({ projectId, children }: EditorProviderProps) {
 		return () => {
 			cancelled = true;
 		};
-	}, [projectId, router]);
+	}, [preserveProjectId, projectId, router]);
 
 	if (error) {
 		return (
@@ -134,6 +145,7 @@ function EditorRuntimeBindings() {
 	);
 
 	useEffect(() => {
+		// eslint-disable-next-line react-hooks/immutability -- the editor command manager intentionally exposes this runtime toggle
 		editor.command.isRippleEnabled = rippleEditingEnabled;
 	}, [editor, rippleEditingEnabled]);
 
@@ -141,7 +153,7 @@ function EditorRuntimeBindings() {
 		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
 			if (!editor.save.getIsDirty()) return;
 			event.preventDefault();
-			(event as unknown as { returnValue: string }).returnValue = "";
+			event.returnValue = true;
 		};
 
 		window.addEventListener("beforeunload", handleBeforeUnload);

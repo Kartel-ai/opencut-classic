@@ -23,6 +23,8 @@ export interface ExportOptions {
 export interface ExportResult {
 	success: boolean;
 	buffer?: ArrayBuffer;
+	videoCodec?: "h264" | "vp9";
+	audioCodec?: "aac" | "opus" | null;
 	error?: string;
 	cancelled?: boolean;
 }

@@ -1,8 +1,9 @@
-import { betterAuth, type RateLimit } from "better-auth";
+import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { Redis } from "@upstash/redis";
 import { db } from "@/db";
 import { webEnv } from "@/env/web";
+import { createRedisRateLimitStorage } from "@/auth/rate-limit-storage";
 
 const redis = new Redis({
 	url: webEnv.UPSTASH_REDIS_REST_URL,
@@ -25,15 +26,7 @@ export const auth = betterAuth({
 	},
 	rateLimit: {
 		storage: "secondary-storage",
-		customStorage: {
-			get: async (key) => {
-				const value = await redis.get(key);
-				return value as RateLimit | undefined;
-			},
-			set: async (key, value) => {
-				await redis.set(key, value);
-			},
-		},
+		customStorage: createRedisRateLimitStorage(redis),
 	},
 	baseURL: webEnv.NEXT_PUBLIC_SITE_URL,
 	appName: "OpenCut",

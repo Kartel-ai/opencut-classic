@@ -1,0 +1,477 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import { useEditor } from "@/editor/use-editor";
+import { processMediaAssets } from "@/media/processing";
+import { storageService } from "@/services/storage/service";
+import { buildElementFromMedia } from "@/timeline/element-utils";
+import { toElementDurationTicks } from "@/timeline/creation";
+import { addMediaTime, mediaTimeToSeconds, ZERO_MEDIA_TIME } from "@/wasm";
+import type { TProject } from "@/project/types";
+import {
+	buildVideoFinisherBridgeMessage,
+	VIDEO_FINISHER_BRIDGE,
+	VIDEO_FINISHER_BRIDGE_VERSION,
+} from "./video-finisher-protocol";
+import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
+
+const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
+const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
+	process.env.NEXT_PUBLIC_KARTEL_OPEN_CUT_COMMIT ?? "",
+)
+	? (process.env.NEXT_PUBLIC_KARTEL_OPEN_CUT_COMMIT ?? "")
+	: "";
+
+type HostProject = {
+	source?: {
+		assetId?: string;
+		versionId?: string;
+		name?: string;
+		src?: string;
+		byteSize?: number;
+		sha256?: string;
+	};
+	document?: unknown;
+	issueIds?: string[];
+	repairs?: unknown;
+};
+
+export function studioOrigin(
+	raw = String(process.env.NEXT_PUBLIC_KARTEL_STUDIO_ORIGIN ?? ""),
+): string | null {
+	raw = raw.trim();
+	if (!raw) return null;
+	try {
+		const url = new URL(raw);
+		const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+		const valid =
+			!url.username &&
+			!url.password &&
+			url.pathname === "/" &&
+			!url.search &&
+			!url.hash &&
+			(url.protocol === "https:" || (url.protocol === "http:" && loopback));
+		return valid ? url.origin : null;
+	} catch {
+		return null;
+	}
+}
+
+export function normalizedProjectDocument({
+	value,
+	projectId,
+}: {
+	value: unknown;
+	projectId: string;
+}): TProject | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- guarded versioned bridge document
+	const project = value as TProject;
+	if (
+		project.metadata?.id !== projectId ||
+		typeof project.metadata.name !== "string" ||
+		!Array.isArray(project.scenes) ||
+		!project.settings ||
+		typeof project.currentSceneId !== "string"
+	)
+		return null;
+	const createdAt = new Date(project.metadata.createdAt);
+	const updatedAt = new Date(project.metadata.updatedAt);
+	if (
+		!Number.isFinite(createdAt.getTime()) ||
+		!Number.isFinite(updatedAt.getTime())
+	)
+		return null;
+	const scenes = project.scenes.map((scene) => {
+		const sceneCreatedAt = new Date(scene.createdAt);
+		const sceneUpdatedAt = new Date(scene.updatedAt);
+		if (
+			!scene.id ||
+			!scene.tracks ||
+			!Number.isFinite(sceneCreatedAt.getTime()) ||
+			!Number.isFinite(sceneUpdatedAt.getTime())
+		) {
+			throw new Error("Studio returned an invalid OpenCut scene.");
+		}
+		return { ...scene, createdAt: sceneCreatedAt, updatedAt: sceneUpdatedAt };
+	});
+	return {
+		...project,
+		metadata: { ...project.metadata, createdAt, updatedAt },
+		scenes,
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isHostMessage(value: unknown): value is VideoFinisherHostMessage {
+	if (!isRecord(value)) return false;
+	const message = value;
+	return (
+		message.bridge === VIDEO_FINISHER_BRIDGE &&
+		message.version === VIDEO_FINISHER_BRIDGE_VERSION &&
+		["LOAD_PROJECT", "SAVE_PROJECT", "EXPORT_PROJECT"].includes(
+			String(message.type),
+		) &&
+		typeof message.nonce === "string" &&
+		typeof message.projectId === "string" &&
+		Number.isInteger(message.revision) &&
+		typeof message.operationId === "string"
+	);
+}
+
+async function sha256Hex(blob: Blob): Promise<string> {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		await blob.arrayBuffer(),
+	);
+	return [...new Uint8Array(digest)]
+		.map((value) => value.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+function safeSourceName(name: unknown): string {
+	const value = String(name ?? "source-video.mp4")
+		.trim()
+		.replace(/[\\/\r\n]/g, "-")
+		.slice(0, 240);
+	return /\.(mp4|mov|webm)$/i.test(value)
+		? value
+		: `${value || "source-video"}.mp4`;
+}
+
+async function sourceFile(project: HostProject): Promise<File> {
+	const source = project.source;
+	if (!source?.src || !source.versionId)
+		throw new Error("Studio did not provide an exact playable source version.");
+	let url: URL;
+	try {
+		url = new URL(source.src);
+	} catch {
+		throw new Error("Studio provided an invalid source transport.");
+	}
+	const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+	if (
+		url.username ||
+		url.password ||
+		(url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+	) {
+		throw new Error("Studio provided an unsafe source transport.");
+	}
+	const response = await fetch(url, { credentials: "omit", redirect: "error" });
+	if (!response.ok)
+		throw new Error("The authorized source version could not be loaded.");
+	const blob = await response.blob();
+	if (
+		!blob.type.startsWith("video/") ||
+		blob.size < 1 ||
+		blob.size > MAX_SOURCE_BYTES ||
+		(Number.isSafeInteger(source.byteSize) && source.byteSize !== blob.size)
+	) {
+		throw new Error("The source version failed its bounded media check.");
+	}
+	if (
+		/^[0-9a-f]{64}$/.test(source.sha256 ?? "") &&
+		(await sha256Hex(blob)) !== source.sha256
+	) {
+		throw new Error(
+			"The source version checksum changed before OpenCut import.",
+		);
+	}
+	return new File([blob], safeSourceName(source.name), {
+		type: blob.type,
+		lastModified: Date.now(),
+	});
+}
+
+export function KartelVideoFinisherBridge({
+	projectId,
+}: {
+	projectId: string;
+}) {
+	const editor = useEditor();
+	const hostOrigin = studioOrigin();
+	const identityRef = useRef<Pick<
+		VideoFinisherHostMessage,
+		"nonce" | "projectId" | "revision" | "operationId"
+	> | null>(null);
+	const applyingRef = useRef(false);
+
+	useEffect(() => {
+		if (!hostOrigin || window.parent === window) return;
+		const query = new URLSearchParams(window.location.search);
+		const bridgeNonce = query.get("kartel_nonce") ?? "";
+		const bridgeProject = query.get("kartel_project") ?? "";
+		if (!bridgeNonce || bridgeNonce.length > 240 || bridgeProject !== projectId) return;
+		const post = ({
+			type,
+			identity,
+			payload = null,
+		}: {
+			type: string;
+			identity: Pick<
+				VideoFinisherHostMessage,
+				"nonce" | "projectId" | "revision" | "operationId"
+			>;
+			payload?: unknown;
+		}) => {
+			window.parent.postMessage(
+				buildVideoFinisherBridgeMessage({ type, identity, payload }),
+				hostOrigin,
+			);
+		};
+
+		const ensureSource = async (project: HostProject) => {
+			const versionId = project.source?.versionId;
+			if (!versionId)
+				throw new Error("The source version identity is missing.");
+			const existing = editor.media
+				.getAssets()
+				.find((asset) => asset.id === versionId);
+			if (existing) return existing;
+			const file = await sourceFile(project);
+			const [processed] = await processMediaAssets({ files: [file] });
+			if (!processed)
+				throw new Error("OpenCut could not decode the source version.");
+			const created = await editor.media.addMediaAsset({
+				projectId,
+				asset: { ...processed, id: versionId },
+			});
+			if (!created)
+				throw new Error("OpenCut could not retain the source version.");
+			return created;
+		};
+
+		const load = async (message: VideoFinisherHostMessage) => {
+			if (!OPEN_CUT_COMMIT)
+				throw new Error("This OpenCut build is missing its exact Git commit identity.");
+			const project = (message.payload ?? {}) as HostProject;
+			const document = normalizedProjectDocument({
+				value: project.document,
+				projectId,
+			});
+			applyingRef.current = true;
+			try {
+				if (project.document && !document)
+					throw new Error(
+						"Studio returned an invalid OpenCut project document.",
+					);
+				if (document) {
+					await storageService.saveProject({ project: document });
+					await editor.project.loadProject({ id: projectId });
+				}
+				const source = await ensureSource(project);
+				const activeScene = editor.scenes.getActiveScene();
+				const hasTimelineSource =
+					activeScene.tracks.main.elements.some(
+						(element) => "mediaId" in element && element.mediaId === source.id,
+					) ||
+					activeScene.tracks.overlay.some((track) =>
+						track.elements.some(
+							(element) =>
+								"mediaId" in element && element.mediaId === source.id,
+						),
+					);
+				if (!hasTimelineSource) {
+					editor.timeline.insertElement({
+						placement: {
+							mode: "explicit",
+							trackId: activeScene.tracks.main.id,
+						},
+						element: buildElementFromMedia({
+							mediaId: source.id,
+							mediaType: source.type,
+							name: source.name,
+							duration: toElementDurationTicks({ seconds: source.duration }),
+							startTime: ZERO_MEDIA_TIME,
+						}),
+					});
+				}
+				identityRef.current = message;
+				post({
+					type: "PROJECT_LOADED",
+					identity: message,
+					payload: {
+						instanceId: projectId,
+						loadCount: 1,
+						playhead: mediaTimeToSeconds({
+							time: editor.playback.getCurrentTime(),
+						}),
+						issueCount: project.issueIds?.length ?? 0,
+						repairMode: project.repairs ? "prepared" : "none",
+						openCutCommit: OPEN_CUT_COMMIT,
+					},
+				});
+			} finally {
+				applyingRef.current = false;
+			}
+		};
+
+		const save = async (message: VideoFinisherHostMessage) => {
+			await editor.save.flush();
+			const stored = await storageService.loadProject({ id: projectId });
+			if (!stored) throw new Error("OpenCut could not read the saved project.");
+			identityRef.current = message;
+			post({
+				type: "PROJECT_SAVED",
+				identity: message,
+				payload: {
+					document: stored.project,
+					openCutCommit: OPEN_CUT_COMMIT,
+				},
+			});
+		};
+
+		const exportProject = async (message: VideoFinisherHostMessage) => {
+			post({
+				type: "EXPORT_STARTED",
+				identity: message,
+				payload: { progress: 0 },
+			});
+			let lastProgress = -1;
+			const unsubscribe = editor.project.subscribe(() => {
+				const state = editor.project.getExportState();
+				const rounded = Math.max(
+					0,
+					Math.min(100, Math.round(state.progress * 100)),
+				);
+				if (state.isExporting && rounded !== lastProgress) {
+					lastProgress = rounded;
+					post({
+						type: "EXPORT_PROGRESS",
+						identity: message,
+						payload: { progress: rounded / 100 },
+					});
+				}
+			});
+			try {
+				const active = editor.project.getActive();
+				const result = await editor.project.export({
+					options: {
+						format: "mp4",
+						quality: "high",
+						fps: active.settings.fps,
+						includeAudio: true,
+					},
+				});
+				if (!result.success || !result.buffer)
+					throw new Error(result.error || "OpenCut export failed.");
+				if (result.videoCodec !== "h264" || result.audioCodec !== "aac") {
+					throw new Error(
+						"This browser could not produce the required H.264/AAC MP4. The project remains saved.",
+					);
+				}
+				const file = new File(
+					[result.buffer],
+					`${safeSourceName(active.metadata.name).replace(/\.(mov|webm)$/i, ".mp4")}`,
+					{ type: "video/mp4", lastModified: Date.now() },
+				);
+				post({
+					type: "EXPORT_COMPLETED",
+					identity: message,
+					payload: {
+						file,
+						filename: file.name,
+						metadata: {
+							container: "mp4",
+							videoCodec: result.videoCodec,
+							audioCodec: result.audioCodec,
+							durationSeconds: mediaTimeToSeconds({
+								time: editor.timeline.getTotalDuration(),
+							}),
+							frameRate: active.settings.fps,
+							width: active.settings.canvasSize.width,
+							height: active.settings.canvasSize.height,
+						},
+					},
+				});
+			} finally {
+				unsubscribe();
+				editor.project.clearExportState();
+			}
+		};
+
+		const onMessage = (event: MessageEvent) => {
+			if (event.source !== window.parent || event.origin !== hostOrigin) return;
+			if (!isHostMessage(event.data)) return;
+			const message = event.data;
+			if (
+				message.projectId !== projectId ||
+				message.nonce !== bridgeNonce ||
+				message.operationId.length < 1 ||
+				message.operationId.length > 240 ||
+				message.revision < 0
+			)
+				return;
+			const action =
+				message.type === "LOAD_PROJECT"
+					? load(message)
+					: message.type === "SAVE_PROJECT"
+						? save(message)
+						: exportProject(message);
+			void action.catch((error) =>
+				post({
+					type:
+						message.type === "LOAD_PROJECT"
+							? "LOAD_FAILED"
+							: message.type === "SAVE_PROJECT"
+								? "SAVE_FAILED"
+								: "EXPORT_FAILED",
+					identity: message,
+					payload: {
+						error:
+							error instanceof Error
+								? error.message
+								: "OpenCut bridge operation failed.",
+					},
+				}),
+			);
+		};
+
+		const changed = () => {
+			if (applyingRef.current || !identityRef.current) return;
+			post({ type: "PROJECT_CHANGED", identity: identityRef.current });
+		};
+		const selected = () => {
+			if (applyingRef.current || !identityRef.current) return;
+			const [selection] = editor.timeline.getElementsWithTracks({
+				elements: editor.selection.getSelectedElements(),
+			});
+			if (!selection) return;
+			post({
+				type: "SELECTION_CHANGED",
+				identity: identityRef.current,
+				payload: {
+					clipId: selection.element.id,
+					startSeconds: mediaTimeToSeconds({
+						time: selection.element.startTime,
+					}),
+					endSeconds: mediaTimeToSeconds({
+						time: addMediaTime({
+							a: selection.element.startTime,
+							b: selection.element.duration,
+						}),
+					}),
+				},
+			});
+		};
+		window.addEventListener("message", onMessage);
+		post({
+			type: "EDITOR_READY",
+			identity: { nonce: bridgeNonce, projectId, revision: 0, operationId: "editor-ready" },
+		});
+		const unsubscribers = [
+			editor.timeline.subscribe(changed),
+			editor.scenes.subscribe(changed),
+			editor.selection.subscribe(selected),
+		];
+		return () => {
+			window.removeEventListener("message", onMessage);
+			unsubscribers.forEach((unsubscribe) => unsubscribe());
+		};
+	}, [editor, hostOrigin, projectId]);
+
+	return null;
+}

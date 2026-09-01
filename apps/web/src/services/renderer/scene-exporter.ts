@@ -50,6 +50,8 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	private quality: ExportQuality;
 	private shouldIncludeAudio: boolean;
 	private audioBuffer?: AudioBuffer;
+	private videoCodec: "h264" | "vp9";
+	private audioCodec: "aac" | "opus" | null = null;
 
 	private isCancelled = false;
 
@@ -70,6 +72,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		});
 
 		this.format = format;
+		this.videoCodec = format === "webm" ? "vp9" : "h264";
 		this.quality = quality;
 		this.shouldIncludeAudio = shouldIncludeAudio ?? false;
 		this.audioBuffer = audioBuffer;
@@ -119,6 +122,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 				});
 				if (!supported) audioCodec = "opus";
 			}
+			this.audioCodec = audioCodec;
 
 			audioSource = new AudioBufferSource({
 				codec: audioCodec,
@@ -167,5 +171,12 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 
 		this.emit("complete", buffer);
 		return buffer;
+	}
+
+	getCodecMetadata(): {
+		videoCodec: "h264" | "vp9";
+		audioCodec: "aac" | "opus" | null;
+	} {
+		return { videoCodec: this.videoCodec, audioCodec: this.audioCodec };
 	}
 }
