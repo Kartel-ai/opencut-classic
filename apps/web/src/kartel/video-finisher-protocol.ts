@@ -8,7 +8,7 @@ export function isKartelVideoFinisherRoute(pathname: string) {
 export type VideoFinisherHostMessage = {
 	bridge: typeof VIDEO_FINISHER_BRIDGE;
 	version: typeof VIDEO_FINISHER_BRIDGE_VERSION;
-	type: "LOAD_PROJECT" | "SAVE_PROJECT" | "EXPORT_PROJECT";
+	type: "LOAD_PROJECT" | "SAVE_PROJECT" | "INSERT_REPLACEMENT" | "OBSERVE_REPLACEMENT" | "EXPORT_PROJECT";
 	nonce: string;
 	projectId: string;
 	revision: number;
