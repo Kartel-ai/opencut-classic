@@ -578,6 +578,9 @@ function ElementInner({
 					<button
 						type="button"
 						tabIndex={-1}
+						aria-label={`Select ${element.name} timeline clip`}
+						data-element-id={element.id}
+						data-media-id={hasMediaId(element) ? element.mediaId : undefined}
 						className="absolute inset-0 size-full flex flex-col"
 						onClick={(event) => onElementClick({ event, element })}
 						onMouseDown={(event) => onElementMouseDown({ event, element })}
