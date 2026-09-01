@@ -67,10 +67,13 @@ export function repairMediaId(operationId: string): string {
 	return `kartel-repair-${operationId}`.slice(0, 240);
 }
 
-function findRepairElement(
-	tracks: readonly { elements: readonly unknown[] }[],
-	mediaId: string,
-): { id: string; mediaId: string } | null {
+function findRepairElement({
+	tracks,
+	mediaId,
+}: {
+	tracks: readonly { elements: readonly unknown[] }[];
+	mediaId: string;
+}): { id: string; mediaId: string } | null {
 	for (const track of tracks) {
 		for (const element of track.elements) {
 			if (isRecord(element) && typeof element.id === "string" && element.mediaId === mediaId) {
@@ -395,7 +398,7 @@ export function KartelVideoFinisherBridge({
 					);
 				if (document) {
 					await storageService.saveProject({ project: document });
-					await editor.project.loadProject({ id: projectId });
+					await editor.project.loadProject({ id: projectId, preserveActiveScene: true });
 				}
 				const source = await ensureSource(project);
 				const activeScene = editor.scenes.getActiveScene();
@@ -468,7 +471,7 @@ export function KartelVideoFinisherBridge({
 				throw new Error("The exact source clip is no longer present in this project revision.");
 			}
 			const mediaId = repairMediaId(message.operationId);
-			const existing = findRepairElement(tracks, mediaId);
+			const existing = findRepairElement({ tracks, mediaId });
 			if (existing) {
 				post({
 					type: "REPLACEMENT_INSERTED",
@@ -508,10 +511,10 @@ export function KartelVideoFinisherBridge({
 					placement: { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
 				});
 				const insertedScene = editor.scenes.getActiveScene();
-				const inserted = findRepairElement(
-					[...insertedScene.tracks.overlay, insertedScene.tracks.main, ...insertedScene.tracks.audio],
+				const inserted = findRepairElement({
+					tracks: [...insertedScene.tracks.overlay, insertedScene.tracks.main, ...insertedScene.tracks.audio],
 					mediaId,
-				);
+				});
 				if (!inserted) throw new Error("OpenCut could not confirm the inserted repair candidate.");
 				await editor.save.flush();
 				identityRef.current = message;
@@ -538,7 +541,7 @@ export function KartelVideoFinisherBridge({
 			const mediaId = repairMediaId(message.operationId);
 			const activeScene = editor.scenes.getActiveScene();
 			const tracks = [...activeScene.tracks.overlay, activeScene.tracks.main, ...activeScene.tracks.audio];
-			const existing = findRepairElement(tracks, mediaId);
+			const existing = findRepairElement({ tracks, mediaId });
 			post({
 				type: "REPLACEMENT_OBSERVED",
 				identity: message,

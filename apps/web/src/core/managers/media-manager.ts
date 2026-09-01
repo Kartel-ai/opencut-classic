@@ -93,8 +93,13 @@ export class MediaManager {
 			const mediaAssets = await storageService.loadAllMediaAssets({
 				projectId,
 			});
+			const previousAssets = this.assets;
 			this.assets = mediaAssets;
 			this.notify();
+			previousAssets.forEach((asset) => {
+				if (asset.url) URL.revokeObjectURL(asset.url);
+				if (asset.thumbnailUrl) URL.revokeObjectURL(asset.thumbnailUrl);
+			});
 		} catch (error) {
 			console.error("Failed to load media assets:", error);
 		} finally {

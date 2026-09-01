@@ -149,7 +149,13 @@ export class ProjectManager {
 		}
 	}
 
-	async loadProject({ id }: { id: string }): Promise<void> {
+	async loadProject({
+		id,
+		preserveActiveScene = false,
+	}: {
+		id: string;
+		preserveActiveScene?: boolean;
+	}): Promise<void> {
 		if (!this.isInitialized) {
 			this.isLoading = true;
 			this.notify();
@@ -157,8 +163,10 @@ export class ProjectManager {
 
 		this.editor.save.pause();
 		await this.ensureStorageMigrations();
-		this.editor.media.clearAllAssets();
-		this.editor.scenes.clearScenes();
+		if (!preserveActiveScene) {
+			this.editor.media.clearAllAssets();
+			this.editor.scenes.clearScenes();
+		}
 
 		try {
 			const result = await storageService.loadProject({ id });
@@ -168,10 +176,20 @@ export class ProjectManager {
 
 			const project = result.project;
 
+			if (preserveActiveScene && (!project.scenes?.length || !project.scenes.some((scene) => scene.id === project.currentSceneId))) {
+				throw new Error("Project has no valid active scene");
+			}
+
+			if (preserveActiveScene && project.scenes.length > 0) {
+				this.editor.scenes.initializeScenes({
+					scenes: project.scenes,
+					currentSceneId: project.currentSceneId,
+				});
+			}
 			this.active = project;
 			this.notify();
 
-			if (project.scenes && project.scenes.length > 0) {
+			if (!preserveActiveScene && project.scenes && project.scenes.length > 0) {
 				this.editor.scenes.initializeScenes({
 					scenes: project.scenes,
 					currentSceneId: project.currentSceneId,
