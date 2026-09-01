@@ -27,12 +27,14 @@ const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
 	? (process.env.NEXT_PUBLIC_KARTEL_OPEN_CUT_COMMIT ?? "")
 	: "";
 
-type HostProject = {
+export type HostProject = {
 	source?: {
 		assetId?: string;
 		versionId?: string;
 		name?: string;
 		src?: string;
+		mimeType?: string;
+		bytes?: ArrayBuffer;
 		byteSize?: number;
 		sha256?: string;
 	};
@@ -280,9 +282,32 @@ async function repairCandidateFile(insertion: RepairInsertion): Promise<File> {
 	});
 }
 
-async function sourceFile(project: HostProject): Promise<File> {
+export async function sourceFile(project: HostProject): Promise<File> {
 	const source = project.source;
-	if (!source?.src || !source.versionId)
+	if (!source?.versionId)
+		throw new Error("Studio did not provide an exact playable source version.");
+	if (source.bytes instanceof ArrayBuffer) {
+		const mimeType = String(source.mimeType ?? "").toLowerCase();
+		if (
+			mimeType !== "video/mp4" ||
+			source.bytes.byteLength < 1 ||
+			source.bytes.byteLength > MAX_SOURCE_BYTES ||
+			!Number.isSafeInteger(source.byteSize) ||
+			source.byteSize !== source.bytes.byteLength ||
+			!/^[0-9a-f]{64}$/.test(source.sha256 ?? "")
+		) {
+			throw new Error("The transferred source failed its bounded media identity check.");
+		}
+		const blob = new Blob([source.bytes], { type: mimeType });
+		if ((await sha256Hex(blob)) !== source.sha256) {
+			throw new Error("The transferred source checksum changed before OpenCut import.");
+		}
+		return new File([blob], safeSourceName(source.name), {
+			type: mimeType,
+			lastModified: Date.now(),
+		});
+	}
+	if (!source.src)
 		throw new Error("Studio did not provide an exact playable source version.");
 	let url: URL;
 	try {

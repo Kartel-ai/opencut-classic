@@ -5,7 +5,7 @@ import {
 	VIDEO_FINISHER_BRIDGE,
 	VIDEO_FINISHER_BRIDGE_VERSION,
 } from "../video-finisher-protocol";
-import { normalizedRepairInsertion, repairMediaId } from "../video-finisher-bridge";
+import { normalizedRepairInsertion, repairMediaId, sourceFile } from "../video-finisher-bridge";
 
 describe("buildVideoFinisherBridgeMessage", () => {
 	test("keeps the response type authoritative when the host identity is a complete request", () => {
@@ -82,5 +82,30 @@ describe("repairMediaId", () => {
 	test("binds insertion and observation to the same bounded operation identity", () => {
 		expect(repairMediaId("repair-operation-1")).toBe("kartel-repair-repair-operation-1");
 		expect(repairMediaId("x".repeat(300))).toHaveLength(240);
+	});
+});
+
+describe("sourceFile", () => {
+	test("accepts one exact transferred MP4 without a signed URL and rejects checksum drift", async () => {
+		const bytes = new TextEncoder().encode("exact private source");
+		const digest = await crypto.subtle.digest("SHA-256", bytes);
+		const sha256 = [...new Uint8Array(digest)]
+			.map((value) => value.toString(16).padStart(2, "0"))
+			.join("");
+		const source = {
+			versionId: "version-1",
+			name: "source.mp4",
+			mimeType: "video/mp4",
+			bytes: bytes.buffer,
+			byteSize: bytes.byteLength,
+			sha256,
+		};
+		const file = await sourceFile({ source });
+		expect(file.name).toBe("source.mp4");
+		expect(file.type).toBe("video/mp4");
+		expect(file.size).toBe(bytes.byteLength);
+		expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
+		await expect(sourceFile({ source: { ...source, sha256: "a".repeat(64) } }))
+			.rejects.toThrow("checksum changed before OpenCut import");
 	});
 });
