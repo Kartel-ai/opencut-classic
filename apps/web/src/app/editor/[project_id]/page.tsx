@@ -37,6 +37,7 @@ import {
 import { KartelVideoFinisherBridge } from "@/kartel/video-finisher-bridge";
 import {
 	isKartelVideoFinisherRoute,
+	shouldShowEditorMobileGate,
 	shouldShowStandaloneEditorChrome,
 } from "@/kartel/video-finisher-protocol";
 
@@ -48,9 +49,10 @@ export default function Editor() {
 		: (params.project_id ?? "");
 	const isKartelEmbed = isKartelVideoFinisherRoute(pathname);
 	const showStandaloneChrome = shouldShowStandaloneEditorChrome(pathname);
+	const showMobileGate = shouldShowEditorMobileGate(pathname);
 
 	return (
-		<MobileGate>
+		<MobileGate enabled={showMobileGate}>
 			<EditorProvider projectId={projectId} preserveProjectId={isKartelEmbed}>
 				{isKartelEmbed ? (
 					<KartelVideoFinisherBridge projectId={projectId} />

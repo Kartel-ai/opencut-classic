@@ -9,6 +9,10 @@ export function shouldShowStandaloneEditorChrome(pathname: string) {
 	return !isKartelVideoFinisherRoute(pathname);
 }
 
+export function shouldShowEditorMobileGate(pathname: string) {
+	return !isKartelVideoFinisherRoute(pathname);
+}
+
 export type VideoFinisherHostMessage = {
 	bridge: typeof VIDEO_FINISHER_BRIDGE;
 	version: typeof VIDEO_FINISHER_BRIDGE_VERSION;

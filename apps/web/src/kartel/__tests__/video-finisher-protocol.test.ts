@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildVideoFinisherBridgeMessage,
 	isKartelVideoFinisherRoute,
+	shouldShowEditorMobileGate,
 	shouldShowStandaloneEditorChrome,
 	VIDEO_FINISHER_BRIDGE,
 	VIDEO_FINISHER_BRIDGE_VERSION,
@@ -53,6 +54,13 @@ describe("isKartelVideoFinisherRoute", () => {
 		expect(shouldShowStandaloneEditorChrome("/kartel/editor/project-1/")).toBe(false);
 		expect(shouldShowStandaloneEditorChrome("/editor/project-1")).toBe(true);
 		expect(shouldShowStandaloneEditorChrome("/kartel/editorial/project-1")).toBe(true);
+	});
+
+	test("leaves the standalone mobile warning intact but never blocks the governed embed", () => {
+		expect(shouldShowEditorMobileGate("/kartel/editor/project-1")).toBe(false);
+		expect(shouldShowEditorMobileGate("/kartel/editor/project-1/")).toBe(false);
+		expect(shouldShowEditorMobileGate("/editor/project-1")).toBe(true);
+		expect(shouldShowEditorMobileGate("/kartel/editorial/project-1")).toBe(true);
 	});
 });
 

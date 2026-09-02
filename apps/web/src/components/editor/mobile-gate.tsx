@@ -11,16 +11,25 @@ const STORAGE_KEY = "mobile-acknowledged";
 
 interface MobileGateProps {
 	children: React.ReactNode;
+	enabled?: boolean;
 }
 
-export function MobileGate({ children }: MobileGateProps) {
+export function MobileGate({ children, enabled = true }: MobileGateProps) {
+	if (!enabled) return <>{children}</>;
+	return <MobileViewportGate>{children}</MobileViewportGate>;
+}
+
+function MobileViewportGate({ children }: { children: React.ReactNode }) {
 	const router = useRouter();
 	const [show, setShow] = useState<boolean | null>(null);
 
 	useEffect(() => {
-		const isMobile = window.innerWidth < 1024;
-		const acknowledged = localStorage.getItem(STORAGE_KEY) === "true";
-		setShow(isMobile && !acknowledged);
+		const frame = requestAnimationFrame(() => {
+			const isMobile = window.innerWidth < 1024;
+			const acknowledged = localStorage.getItem(STORAGE_KEY) === "true";
+			setShow(isMobile && !acknowledged);
+		});
+		return () => cancelAnimationFrame(frame);
 	}, []);
 
 	if (show === null) return null;
@@ -52,7 +61,7 @@ export function MobileGate({ children }: MobileGateProps) {
 						Desktop only (for now)
 					</h1>
 					<p className="text-muted-foreground text-sm leading-relaxed">
-						OpenCut isn't optimized for mobile or iPad yet. Things will break
+						OpenCut isn&apos;t optimized for mobile or iPad yet. Things will break
 						and the layout will be a mess. Come back on a desktop for the real
 						experience.
 					</p>
