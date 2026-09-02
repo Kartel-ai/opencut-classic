@@ -766,6 +766,24 @@ export class TimelineManager {
 		this.notify();
 	}
 
+	discardPreviewElements({
+		elementIds,
+	}: {
+		elementIds: readonly string[];
+	}): void {
+		let changed = false;
+		for (const elementId of elementIds) {
+			changed = this.previewOverlay.delete(elementId) || changed;
+		}
+		if (!changed) return;
+		const committedTracks = this.editor.scenes.getActiveSceneOrNull()?.tracks;
+		this.previewTracks =
+			committedTracks && this.previewOverlay.size > 0
+				? this.applyPreviewOverlay(committedTracks)
+				: null;
+		this.notify();
+	}
+
 	private applyPreviewOverlay(tracks: SceneTracks): SceneTracks {
 		if (this.previewOverlay.size === 0) return tracks;
 

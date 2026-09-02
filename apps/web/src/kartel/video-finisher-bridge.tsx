@@ -11,8 +11,18 @@ import {
 	readCachedVideoFinisherExport,
 	releaseCachedVideoFinisherExport,
 } from "./video-finisher-export-cache";
-import { buildElementFromMedia } from "@/timeline/element-utils";
+import {
+	buildElementFromMedia,
+	canElementBeHidden,
+	canElementHaveAudio,
+} from "@/timeline/element-utils";
 import { toElementDurationTicks } from "@/timeline/creation";
+import { updateSceneInArray } from "@/timeline/scenes";
+import type {
+	Bookmark,
+	TimelineElement,
+	TimelineTrack,
+} from "@/timeline/types";
 import {
 	addMediaTime,
 	mediaTimeFromSeconds,
@@ -24,6 +34,7 @@ import {
 	buildVideoFinisherBridgeMessage,
 	VIDEO_FINISHER_BRIDGE,
 	VIDEO_FINISHER_BRIDGE_VERSION,
+	VIDEO_FINISHER_HOST_MESSAGE_TYPES,
 } from "./video-finisher-protocol";
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 
@@ -86,17 +97,46 @@ function findRepairElement({
 	tracks,
 	mediaId,
 }: {
-	tracks: readonly { elements: readonly unknown[] }[];
+	tracks: readonly TimelineTrack[];
 	mediaId: string;
-}): { id: string; mediaId: string } | null {
+}): {
+	id: string;
+	mediaId: string;
+	trackId: string;
+	element: TimelineElement;
+} | null {
 	for (const track of tracks) {
 		for (const element of track.elements) {
-			if (isRecord(element) && typeof element.id === "string" && element.mediaId === mediaId) {
-				return { id: element.id, mediaId };
+			if ("mediaId" in element && element.mediaId === mediaId) {
+				return { id: element.id, mediaId, trackId: track.id, element };
 			}
 		}
 	}
 	return null;
+}
+
+export function repairPreviewUpdate({
+	tracks,
+	mediaId,
+	silenced,
+}: {
+	tracks: readonly TimelineTrack[];
+	mediaId: string;
+	silenced: boolean;
+}): {
+	trackId: string;
+	elementId: string;
+	updates: Partial<TimelineElement>;
+} | null {
+	const repair = findRepairElement({ tracks, mediaId });
+	if (!repair) return null;
+	const updates = {
+		...(canElementBeHidden(repair.element) ? { hidden: silenced } : {}),
+		...(canElementHaveAudio(repair.element)
+			? { params: { ...repair.element.params, muted: silenced } }
+			: {}),
+	} as Partial<TimelineElement>;
+	return { trackId: repair.trackId, elementId: repair.id, updates };
 }
 
 export function normalizedRepairInsertion(value: unknown): RepairInsertion | null {
@@ -226,15 +266,95 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+// Compare request: play one bounded range with the repair element audible/visible (repaired) or
+// silenced/hidden (original), or stop. The preview uses OpenCut's transient overlay and is never
+// committed to the project.
+export type PreviewRange = {
+	mode: "original" | "repaired" | "stop";
+	mediaId: string;
+	startSeconds: number;
+	endSeconds: number;
+};
+
+export function normalizedPreviewRange(value: unknown): PreviewRange | null {
+	if (!isRecord(value)) return null;
+	const mode = String(value.mode ?? "");
+	if (mode !== "original" && mode !== "repaired" && mode !== "stop") return null;
+	const startSeconds = Number(value.startSeconds);
+	const endSeconds = Number(value.endSeconds);
+	if (
+		typeof value.mediaId !== "string" || value.mediaId.length < 1 || value.mediaId.length > 240 ||
+		!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 6 * 60 * 60
+	) return null;
+	return { mode, mediaId: value.mediaId, startSeconds, endSeconds };
+}
+
+// Studio-owned timeline markers: one bookmark per recorded issue or note, coloured by category,
+// carrying the operator's own sentence. Operator bookmarks are never touched.
+export const KARTEL_MARKER_PREFIX = "Kartel · ";
+const MARKER_COLORS = new Set(["dialogue", "artifact", "shot", "pacing", "mix"]);
+
+export type HostMarker = {
+	id: string;
+	startSeconds: number;
+	endSeconds: number;
+	note: string;
+	category: "dialogue" | "artifact" | "shot" | "pacing" | "mix";
+};
+
+export function normalizedMarkers(value: unknown): HostMarker[] | null {
+	if (!isRecord(value) || !Array.isArray(value.markers) || value.markers.length > 200) return null;
+	const markers: HostMarker[] = [];
+	for (const entry of value.markers) {
+		if (!isRecord(entry)) return null;
+		const startSeconds = Number(entry.startSeconds);
+		const endSeconds = Number(entry.endSeconds);
+		const category = String(entry.category ?? "");
+		if (
+			typeof entry.id !== "string" || entry.id.length < 1 || entry.id.length > 200 ||
+			!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds < startSeconds || endSeconds > 6 * 60 * 60 ||
+			typeof entry.note !== "string" || entry.note.length > 600 || !MARKER_COLORS.has(category)
+		) return null;
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- validated against MARKER_COLORS above
+		markers.push({ id: entry.id, startSeconds, endSeconds, note: entry.note.trim(), category: category as HostMarker["category"] });
+	}
+	return markers;
+}
+
+const MARKER_COLOR_BY_CATEGORY: Record<HostMarker["category"], string> = {
+	dialogue: "#2f6fed",
+	artifact: "#c0392b",
+	shot: "#8e44ad",
+	pacing: "#d68910",
+	mix: "#138d75",
+};
+
+export function kartelMarkerBookmarks({
+	markers,
+	existing,
+}: {
+	markers: HostMarker[];
+	existing: Bookmark[];
+}): Bookmark[] {
+	const operatorBookmarks = existing.filter((bookmark) => !String(bookmark.note ?? "").startsWith(KARTEL_MARKER_PREFIX));
+	const kartel = markers.map((marker) => ({
+		time: mediaTimeFromSeconds({ seconds: marker.startSeconds }),
+		note: `${KARTEL_MARKER_PREFIX}${marker.note || marker.category}`,
+		color: MARKER_COLOR_BY_CATEGORY[marker.category],
+		duration: marker.endSeconds > marker.startSeconds
+			? mediaTimeFromSeconds({ seconds: marker.endSeconds - marker.startSeconds })
+			: undefined,
+	}));
+	return [...operatorBookmarks, ...kartel];
+}
+
 function isHostMessage(value: unknown): value is VideoFinisherHostMessage {
 	if (!isRecord(value)) return false;
 	const message = value;
 	return (
 		message.bridge === VIDEO_FINISHER_BRIDGE &&
 		message.version === VIDEO_FINISHER_BRIDGE_VERSION &&
-		["LOAD_PROJECT", "SAVE_PROJECT", "INSERT_REPLACEMENT", "OBSERVE_REPLACEMENT", "EXPORT_PROJECT", "OBSERVE_EXPORT", "RELEASE_EXPORT"].includes(
-			String(message.type),
-		) &&
+		(VIDEO_FINISHER_HOST_MESSAGE_TYPES as readonly string[]).includes(String(message.type)) &&
 		typeof message.nonce === "string" &&
 		typeof message.projectId === "string" &&
 		Number.isInteger(message.revision) &&
@@ -456,6 +576,13 @@ export function KartelVideoFinisherBridge({
 					await editor.project.loadProject({ id: projectId, preserveActiveScene: true });
 				}
 				const source = await ensureSource(project);
+				// Studio owns the title: the OpenCut project carries the exact source name, never
+				// "Untitled Project", so the embedded editor reads as the operator's video.
+				const desiredName = String(project.source?.name ?? "").trim().slice(0, 240);
+				const activeProject = editor.project.getActive();
+				if (desiredName && activeProject && activeProject.metadata.name !== desiredName) {
+					await editor.project.renameProject({ id: projectId, name: desiredName });
+				}
 				const activeScene = editor.scenes.getActiveScene();
 				const hasTimelineSource =
 					activeScene.tracks.main.elements.some(
@@ -604,6 +731,120 @@ export function KartelVideoFinisherBridge({
 			});
 		};
 
+		let previewStop: (() => void) | null = null;
+		let repairPreviewElementId: string | null = null;
+		const mutateRepairPreview = (mutate: () => void) => {
+			// Timeline preview notifications normally participate in autosave. Pause save delivery
+			// while applying or discarding this host-owned compare overlay so it stays ephemeral.
+			editor.save.pause();
+			applyingRef.current = true;
+			try {
+				mutate();
+			} finally {
+				applyingRef.current = false;
+				editor.save.resume();
+			}
+		};
+		const clearRepairPreview = () => {
+			if (!repairPreviewElementId) return;
+			const elementId = repairPreviewElementId;
+			mutateRepairPreview(() =>
+				editor.timeline.discardPreviewElements({ elementIds: [elementId] }),
+			);
+			repairPreviewElementId = null;
+		};
+		const setRepairElementSilenced = ({
+			mediaId,
+			silenced,
+		}: {
+			mediaId: string;
+			silenced: boolean;
+		}) => {
+			const scene = editor.scenes.getActiveScene();
+			clearRepairPreview();
+			if (editor.timeline.isPreviewActive()) {
+				throw new Error("Finish the current editor interaction before comparing this repair.");
+			}
+			if (!silenced) return;
+			const update = repairPreviewUpdate({
+				tracks: [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio],
+				mediaId,
+				silenced,
+			});
+			if (!update) {
+				throw new Error("The repair to compare is not present in this project revision.");
+			}
+			mutateRepairPreview(() => editor.timeline.previewElements({ updates: [update] }));
+			repairPreviewElementId = update.elementId;
+		};
+		const previewRange = async (message: VideoFinisherHostMessage) => {
+			const preview = normalizedPreviewRange(message.payload);
+			if (!preview) throw new Error("Studio returned an invalid compare request.");
+			previewStop?.();
+			previewStop = null;
+			if (preview.mode === "stop") {
+				editor.playback.pause();
+				clearRepairPreview();
+				post({ type: "PREVIEW_STATE", identity: message, payload: { mode: "stop", playing: false } });
+				return;
+			}
+			const scene = editor.scenes.getActiveScene();
+			const tracks = [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio];
+			if (!findRepairElement({ tracks, mediaId: preview.mediaId })) {
+				throw new Error("The repair to compare is not present in this project revision.");
+			}
+			setRepairElementSilenced({
+				mediaId: preview.mediaId,
+				silenced: preview.mode === "original",
+			});
+			editor.playback.seek({ time: mediaTimeFromSeconds({ seconds: preview.startSeconds }) });
+			editor.playback.play();
+			// Stopping pauses playback, which notifies playback subscribers again: the guard makes the
+			// stop idempotent so the listener never re-enters itself.
+			let stopped = false;
+			let sawPlaying = false;
+			let unsubscribe: (() => void) | null = null;
+			const stop = (reachedEnd: boolean) => {
+				if (stopped) return;
+				stopped = true;
+				unsubscribe?.();
+				previewStop = null;
+				editor.playback.pause();
+				clearRepairPreview();
+				if (reachedEnd) {
+					post({ type: "PREVIEW_STATE", identity: message, payload: { mode: "stop", playing: false, reachedEnd: true } });
+				}
+			};
+			unsubscribe = editor.playback.subscribe(() => {
+				if (stopped) return;
+				const playing = editor.playback.getIsPlaying();
+				if (playing) sawPlaying = true;
+				const currentSeconds = mediaTimeToSeconds({ time: editor.playback.getCurrentTime() });
+				if (currentSeconds >= preview.endSeconds || (sawPlaying && !playing)) stop(true);
+			});
+			previewStop = () => stop(false);
+			post({ type: "PREVIEW_STATE", identity: message, payload: { mode: preview.mode, playing: true } });
+		};
+
+		const setMarkers = async (message: VideoFinisherHostMessage) => {
+			const markers = normalizedMarkers(message.payload);
+			if (!markers) throw new Error("Studio returned an invalid marker set.");
+			const scene = editor.scenes.getActiveScene();
+			applyingRef.current = true;
+			try {
+				editor.scenes.setScenes({
+					scenes: updateSceneInArray({
+						scenes: editor.scenes.getScenes(),
+						sceneId: scene.id,
+						updates: { bookmarks: kartelMarkerBookmarks({ markers, existing: scene.bookmarks }) },
+					}),
+				});
+			} finally {
+				applyingRef.current = false;
+			}
+			post({ type: "MARKERS_SET", identity: message, payload: { count: markers.length } });
+		};
+
 		const exportProject = async (message: VideoFinisherHostMessage) => {
 			post({
 				type: "EXPORT_STARTED",
@@ -738,6 +979,10 @@ export function KartelVideoFinisherBridge({
 									? observeExport(message)
 									: message.type === "RELEASE_EXPORT"
 										? releaseExport(message)
+										: message.type === "PREVIEW_RANGE"
+											? previewRange(message)
+											: message.type === "SET_MARKERS"
+												? setMarkers(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -748,7 +993,11 @@ export function KartelVideoFinisherBridge({
 								? "SAVE_FAILED"
 								: message.type === "INSERT_REPLACEMENT" || message.type === "OBSERVE_REPLACEMENT"
 									? "REPAIR_FAILED"
-									: "EXPORT_FAILED",
+									: message.type === "PREVIEW_RANGE"
+										? "PREVIEW_FAILED"
+										: message.type === "SET_MARKERS"
+											? "MARKERS_FAILED"
+											: "EXPORT_FAILED",
 					identity: message,
 					payload: {
 						error:
@@ -787,6 +1036,21 @@ export function KartelVideoFinisherBridge({
 				},
 			});
 		};
+		// The playhead streams to Studio (throttled) so the finishing rail can mark in and out
+		// points from where the operator is parked, without OpenCut growing an in/out model.
+		let lastPlayheadPost = 0;
+		let lastPlayheadSeconds = -1;
+		const playhead = () => {
+			if (!identityRef.current) return;
+			const seconds = mediaTimeToSeconds({ time: editor.playback.getCurrentTime() });
+			const playing = editor.playback.getIsPlaying();
+			const now = Date.now();
+			if (playing && now - lastPlayheadPost < 200) return;
+			if (!playing && seconds === lastPlayheadSeconds) return;
+			lastPlayheadPost = now;
+			lastPlayheadSeconds = seconds;
+			post({ type: "PLAYHEAD_CHANGED", identity: identityRef.current, payload: { seconds, playing } });
+		};
 		window.addEventListener("message", onMessage);
 		post({
 			type: "EDITOR_READY",
@@ -796,9 +1060,12 @@ export function KartelVideoFinisherBridge({
 			editor.timeline.subscribe(changed),
 			editor.scenes.subscribe(changed),
 			editor.selection.subscribe(selected),
+			editor.playback.subscribe(playhead),
 		];
 		return () => {
 			window.removeEventListener("message", onMessage);
+			previewStop?.();
+			clearRepairPreview();
 			unsubscribers.forEach((unsubscribe) => unsubscribe());
 		};
 	}, [editor, hostOrigin, projectId]);

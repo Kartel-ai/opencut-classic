@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { isKartelVideoFinisherRoute } from "@/kartel/video-finisher-protocol";
 import { Loader2 } from "lucide-react";
 import { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
@@ -149,7 +150,13 @@ function EditorRuntimeBindings() {
 		editor.command.isRippleEnabled = rippleEditingEnabled;
 	}, [editor, rippleEditingEnabled]);
 
+	const pathname = usePathname();
+	const embeddedInKartel = isKartelVideoFinisherRoute(pathname);
+
 	useEffect(() => {
+		// Inside the Kartel Studio embed the host owns the unsaved-work guard and the durable
+		// save; OpenCut's local autosave debounce must not raise its own leave prompt there.
+		if (embeddedInKartel) return undefined;
 		const handleBeforeUnload = (event: BeforeUnloadEvent) => {
 			if (!editor.save.getIsDirty()) return;
 			event.preventDefault();
@@ -158,7 +165,7 @@ function EditorRuntimeBindings() {
 
 		window.addEventListener("beforeunload", handleBeforeUnload);
 		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-	}, [editor]);
+	}, [editor, embeddedInKartel]);
 
 	useEditorActions();
 	useKeybindingsListener();

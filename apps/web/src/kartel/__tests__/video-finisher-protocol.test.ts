@@ -8,11 +8,17 @@ import {
 	VIDEO_FINISHER_BRIDGE_VERSION,
 } from "../video-finisher-protocol";
 import {
+	KARTEL_MARKER_PREFIX,
+	kartelMarkerBookmarks,
+	normalizedMarkers,
+	normalizedPreviewRange,
 	normalizedRepairInsertion,
 	repairMediaId,
+	repairPreviewUpdate,
 	sourceFile,
 	videoFinisherExportFrameRate,
 } from "../video-finisher-bridge";
+import { mediaTimeFromSeconds } from "@/wasm";
 
 describe("buildVideoFinisherBridgeMessage", () => {
 	test("keeps the response type authoritative when the host identity is a complete request", () => {
@@ -135,5 +141,76 @@ describe("sourceFile", () => {
 		expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
 		await expect(sourceFile({ source: { ...source, sha256: "a".repeat(64) } }))
 			.rejects.toThrow("checksum changed before OpenCut import");
+	});
+});
+
+describe("normalizedPreviewRange", () => {
+	test("keeps one bounded compare request and rejects unknown modes or reversed ranges", () => {
+		const input = { mode: "original", mediaId: "kartel-repair-op-1", startSeconds: 2, endSeconds: 6 };
+		expect(normalizedPreviewRange(input)).toEqual(input);
+		expect(normalizedPreviewRange({ ...input, mode: "repaired" })?.mode).toBe("repaired");
+		expect(normalizedPreviewRange({ ...input, mode: "stop" })?.mode).toBe("stop");
+		expect(normalizedPreviewRange({ ...input, mode: "solo" })).toBeNull();
+		expect(normalizedPreviewRange({ ...input, startSeconds: 6, endSeconds: 2 })).toBeNull();
+		expect(normalizedPreviewRange({ ...input, mediaId: "" })).toBeNull();
+	});
+
+	test("builds a transient visual and audio mute patch without changing the source element", () => {
+		const zero = mediaTimeFromSeconds({ seconds: 0 });
+		const duration = mediaTimeFromSeconds({ seconds: 4 });
+		const element = {
+			id: "repair-element-1",
+			name: "Repair",
+			type: "video" as const,
+			mediaId: "kartel-repair-op-1",
+			hidden: false,
+			params: { volume: -3, muted: false },
+			duration,
+			startTime: zero,
+			trimStart: zero,
+			trimEnd: zero,
+		};
+		const update = repairPreviewUpdate({
+			tracks: [{
+				id: "track-1",
+				name: "Video",
+				type: "video",
+				hidden: false,
+				muted: false,
+				elements: [element],
+			}],
+			mediaId: element.mediaId,
+			silenced: true,
+		});
+		expect(update).toEqual({
+			trackId: "track-1",
+			elementId: element.id,
+			updates: { hidden: true, params: { volume: -3, muted: true } },
+		});
+		expect(element.hidden).toBe(false);
+		expect(element.params.muted).toBe(false);
+	});
+});
+
+describe("kartelMarkerBookmarks", () => {
+	test("replaces only Kartel-owned bookmarks and keeps operator bookmarks", () => {
+		const markers = normalizedMarkers({
+			markers: [
+				{ id: "issue-1", startSeconds: 2, endSeconds: 6, note: "Replace the voice-over", category: "dialogue" },
+				{ id: "issue-2", startSeconds: 12, endSeconds: 12, note: "", category: "artifact" },
+			],
+		});
+		expect(markers).toHaveLength(2);
+		const operator = { time: mediaTimeFromSeconds({ seconds: 1 }), note: "my own note" };
+		const stale = { time: mediaTimeFromSeconds({ seconds: 9 }), note: `${KARTEL_MARKER_PREFIX}old` };
+		const bookmarks = kartelMarkerBookmarks({ markers: markers ?? [], existing: [operator, stale] });
+		expect(bookmarks).toHaveLength(3);
+		expect(bookmarks[0]).toEqual(operator);
+		expect(bookmarks[1].note).toBe(`${KARTEL_MARKER_PREFIX}Replace the voice-over`);
+		expect(bookmarks[1].duration).toEqual(mediaTimeFromSeconds({ seconds: 4 }));
+		expect(bookmarks[2].note).toBe(`${KARTEL_MARKER_PREFIX}artifact`);
+		expect(bookmarks[2].duration).toBeUndefined();
+		expect(normalizedMarkers({ markers: [{ id: "x", startSeconds: 0, endSeconds: 1, note: "n", category: "colour" }] })).toBeNull();
+		expect(normalizedMarkers({ markers: "nope" })).toBeNull();
 	});
 });

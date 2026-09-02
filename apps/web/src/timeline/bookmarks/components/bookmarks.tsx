@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { EditorCore } from "@/core";
 import { useEditor } from "@/editor/use-editor";
 import type { BookmarkDragState } from "../hooks/use-bookmark-drag";
@@ -85,26 +85,25 @@ export function TimelineBookmarksRow({
 		<div
 			className="relative flex-1 overflow-hidden"
 			style={{ height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX }}
+			onWheel={handleWheel}
 		>
-			<button
+			<div
 				className="relative w-full cursor-default select-none border-0 bg-transparent p-0"
 				style={{
 					height: TIMELINE_BOOKMARK_ROW_HEIGHT_PX,
 					width: `${dynamicTimelineWidth}px`,
 				}}
-				aria-label="Timeline ruler"
-				type="button"
-				onWheel={handleWheel}
-				onClick={(event) => {
-					if (!event.currentTarget.contains(event.target as Node)) return;
-					handleTimelineContentClick(event);
-				}}
-				onMouseDown={(event) => {
-					if (!event.currentTarget.contains(event.target as Node)) return;
-					handleRulerMouseDown(event);
-					handleRulerTrackingMouseDown(event);
-				}}
 			>
+				<button
+					className="absolute inset-0 cursor-default border-0 bg-transparent p-0"
+					aria-label="Timeline ruler"
+					type="button"
+					onClick={handleTimelineContentClick}
+					onMouseDown={(event) => {
+						handleRulerMouseDown(event);
+						handleRulerTrackingMouseDown(event);
+					}}
+				/>
 				{bookmarks.map((bookmark) => (
 					<TimelineBookmark
 						key={`bookmark-${bookmark.time}`}
@@ -114,7 +113,7 @@ export function TimelineBookmarksRow({
 						onBookmarkMouseDown={onBookmarkMouseDown}
 					/>
 				))}
-			</button>
+			</div>
 		</div>
 	);
 }
@@ -184,7 +183,7 @@ function TimelineBookmark({
 		<Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
 			<PopoverAnchor asChild>
 				<button
-					className="absolute top-0 h-full min-w-0.5 border-0 bg-transparent p-0"
+					className="absolute top-0 h-full min-w-0.5 cursor-pointer border-0 bg-transparent p-0"
 					style={{
 						left: `${bookmarkLeft}px`,
 						width: `${bookmarkWidth}px`,
@@ -276,6 +275,7 @@ function TimelineBookmark({
 				onOpenAutoFocus={(event) => event.preventDefault()}
 			>
 				<BookmarkPopoverContent
+					key={`${String(time)}-${bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR}`}
 					bookmark={bookmark}
 					time={time}
 					timelineDuration={duration}
@@ -303,14 +303,6 @@ function BookmarkPopoverContent({
 			.replace("#", "")
 			.toUpperCase(),
 	);
-
-	useEffect(() => {
-		setDraftColorHex(
-			(bookmark.color ?? DEFAULT_TIMELINE_BOOKMARK_COLOR)
-				.replace("#", "")
-				.toUpperCase(),
-		);
-	}, [bookmark.color]);
 
 	const handleRemove = () => {
 		editor.scenes.removeBookmark({ time });
