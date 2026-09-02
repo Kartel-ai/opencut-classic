@@ -149,7 +149,7 @@ export class RendererManager {
 		onProgress?: ({ progress }: { progress: number }) => void;
 		onCancel?: () => boolean;
 	}): Promise<ExportResult> {
-		const { format, quality, fps, includeAudio } = options;
+		const { format, quality, fps, includeAudio, requireAudioTrack } = options;
 
 		try {
 			const tracks = this.editor.scenes.getActiveScene().tracks;
@@ -175,6 +175,7 @@ export class RendererManager {
 					tracks,
 					mediaAssets,
 					duration,
+					silenceWhenEmpty: requireAudioTrack,
 				});
 			}
 

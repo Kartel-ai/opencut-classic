@@ -628,12 +628,14 @@ export async function createTimelineAudioBuffer({
 	duration,
 	sampleRate = EXPORT_SAMPLE_RATE,
 	audioContext,
+	silenceWhenEmpty = false,
 }: {
 	tracks: SceneTracks;
 	mediaAssets: MediaAsset[];
 	duration: number;
 	sampleRate?: number;
 	audioContext?: AudioContext;
+	silenceWhenEmpty?: boolean;
 }): Promise<AudioBuffer | null> {
 	const context = audioContext ?? createAudioContext({ sampleRate });
 
@@ -643,7 +645,15 @@ export async function createTimelineAudioBuffer({
 		audioContext: context,
 	});
 
-	if (audioElements.length === 0) return null;
+	if (audioElements.length === 0) {
+		if (!silenceWhenEmpty) return null;
+		const durationSeconds = Math.max(0, duration / TICKS_PER_SECOND);
+		return context.createBuffer(
+			2,
+			Math.max(1, Math.ceil(durationSeconds * sampleRate)),
+			sampleRate,
+		);
+	}
 
 	const outputChannels = 2;
 	const durationSeconds = duration / TICKS_PER_SECOND;

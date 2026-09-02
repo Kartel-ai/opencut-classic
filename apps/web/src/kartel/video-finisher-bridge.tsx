@@ -622,6 +622,7 @@ export function KartelVideoFinisherBridge({
 						quality: "high",
 						fps: active.settings.fps,
 						includeAudio: true,
+						requireAudioTrack: true,
 					},
 				});
 				if (!result.success || !result.buffer)

@@ -18,6 +18,7 @@ export interface ExportOptions {
 	quality: ExportQuality;
 	fps?: FrameRate;
 	includeAudio?: boolean;
+	requireAudioTrack?: boolean;
 }
 
 export interface ExportResult {
