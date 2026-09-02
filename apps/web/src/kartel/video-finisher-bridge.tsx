@@ -6,6 +6,11 @@ import { frameRateToFloat } from "@/fps/utils";
 import { processMediaAssets } from "@/media/processing";
 import type { MediaAsset } from "@/media/types";
 import { storageService } from "@/services/storage/service";
+import {
+	cacheVideoFinisherExport,
+	readCachedVideoFinisherExport,
+	releaseCachedVideoFinisherExport,
+} from "./video-finisher-export-cache";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { toElementDurationTicks } from "@/timeline/creation";
 import {
@@ -227,7 +232,7 @@ function isHostMessage(value: unknown): value is VideoFinisherHostMessage {
 	return (
 		message.bridge === VIDEO_FINISHER_BRIDGE &&
 		message.version === VIDEO_FINISHER_BRIDGE_VERSION &&
-		["LOAD_PROJECT", "SAVE_PROJECT", "INSERT_REPLACEMENT", "OBSERVE_REPLACEMENT", "EXPORT_PROJECT"].includes(
+		["LOAD_PROJECT", "SAVE_PROJECT", "INSERT_REPLACEMENT", "OBSERVE_REPLACEMENT", "EXPORT_PROJECT", "OBSERVE_EXPORT", "RELEASE_EXPORT"].includes(
 			String(message.type),
 		) &&
 		typeof message.nonce === "string" &&
@@ -644,24 +649,27 @@ export function KartelVideoFinisherBridge({
 					`${safeSourceName(active.metadata.name).replace(/\.(mov|webm)$/i, ".mp4")}`,
 					{ type: "video/mp4", lastModified: Date.now() },
 				);
+				const metadata = {
+					container: "mp4" as const,
+					videoCodec: result.videoCodec,
+					audioCodec: result.audioCodec,
+					durationSeconds: mediaTimeToSeconds({
+						time: editor.timeline.getTotalDuration(),
+					}),
+					frameRate: videoFinisherExportFrameRate(active.settings.fps),
+					width: active.settings.canvasSize.width,
+					height: active.settings.canvasSize.height,
+				};
+				await cacheVideoFinisherExport({
+					projectId,
+					operationId: message.operationId,
+					file,
+					metadata,
+				});
 				post({
 					type: "EXPORT_COMPLETED",
 					identity: message,
-					payload: {
-						file,
-						filename: file.name,
-						metadata: {
-							container: "mp4",
-							videoCodec: result.videoCodec,
-							audioCodec: result.audioCodec,
-							durationSeconds: mediaTimeToSeconds({
-								time: editor.timeline.getTotalDuration(),
-							}),
-							frameRate: videoFinisherExportFrameRate(active.settings.fps),
-							width: active.settings.canvasSize.width,
-							height: active.settings.canvasSize.height,
-						},
-					},
+					payload: { file, filename: file.name, metadata, replayed: false },
 				});
 			} finally {
 				unsubscribe();
@@ -669,6 +677,42 @@ export function KartelVideoFinisherBridge({
 			}
 		};
 
+		const observeExport = async (message: VideoFinisherHostMessage) => {
+			const cached = await readCachedVideoFinisherExport({
+				projectId,
+				operationId: message.operationId,
+			});
+			if (!cached) {
+				post({
+					type: "EXPORT_NOT_FOUND",
+					identity: message,
+					payload: { present: false },
+				});
+				return;
+			}
+			post({
+				type: "EXPORT_COMPLETED",
+				identity: message,
+				payload: {
+					file: cached.file,
+					filename: cached.file.name,
+					metadata: cached.metadata,
+					replayed: true,
+				},
+			});
+		};
+
+		const releaseExport = async (message: VideoFinisherHostMessage) => {
+			const released = await releaseCachedVideoFinisherExport({
+				projectId,
+				operationId: message.operationId,
+			});
+			post({
+				type: "EXPORT_RELEASED",
+				identity: message,
+				payload: { released },
+			});
+		};
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== window.parent || event.origin !== hostOrigin) return;
 			if (!isHostMessage(event.data)) return;
@@ -690,7 +734,11 @@ export function KartelVideoFinisherBridge({
 							? insertReplacement(message)
 							: message.type === "OBSERVE_REPLACEMENT"
 								? observeReplacement(message)
-							: exportProject(message);
+								: message.type === "OBSERVE_EXPORT"
+									? observeExport(message)
+									: message.type === "RELEASE_EXPORT"
+										? releaseExport(message)
+										: exportProject(message);
 			void action.catch((error) =>
 				post({
 					type:
