@@ -7,7 +7,12 @@ import {
 	VIDEO_FINISHER_BRIDGE,
 	VIDEO_FINISHER_BRIDGE_VERSION,
 } from "../video-finisher-protocol";
-import { normalizedRepairInsertion, repairMediaId, sourceFile } from "../video-finisher-bridge";
+import {
+	normalizedRepairInsertion,
+	repairMediaId,
+	sourceFile,
+	videoFinisherExportFrameRate,
+} from "../video-finisher-bridge";
 
 describe("buildVideoFinisherBridgeMessage", () => {
 	test("keeps the response type authoritative when the host identity is a complete request", () => {
@@ -61,6 +66,13 @@ describe("isKartelVideoFinisherRoute", () => {
 		expect(shouldShowEditorMobileGate("/kartel/editor/project-1/")).toBe(false);
 		expect(shouldShowEditorMobileGate("/editor/project-1")).toBe(true);
 		expect(shouldShowEditorMobileGate("/kartel/editorial/project-1")).toBe(true);
+	});
+});
+
+describe("videoFinisherExportFrameRate", () => {
+	test("serializes the editor rational as the scalar Studio receipt contract", () => {
+		expect(videoFinisherExportFrameRate({ numerator: 24_000, denominator: 1_001 }))
+			.toBe(24_000 / 1_001);
 	});
 });
 

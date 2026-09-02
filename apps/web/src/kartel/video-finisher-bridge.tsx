@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
+import { frameRateToFloat } from "@/fps/utils";
 import { processMediaAssets } from "@/media/processing";
 import type { MediaAsset } from "@/media/types";
 import { storageService } from "@/services/storage/service";
@@ -27,6 +28,12 @@ const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
 )
 	? (process.env.NEXT_PUBLIC_KARTEL_OPEN_CUT_COMMIT ?? "")
 	: "";
+
+export function videoFinisherExportFrameRate(
+	frameRate: Parameters<typeof frameRateToFloat>[0],
+) {
+	return frameRateToFloat(frameRate);
+}
 
 export type HostProject = {
 	source?: {
@@ -650,7 +657,7 @@ export function KartelVideoFinisherBridge({
 							durationSeconds: mediaTimeToSeconds({
 								time: editor.timeline.getTotalDuration(),
 							}),
-							frameRate: active.settings.fps,
+							frameRate: videoFinisherExportFrameRate(active.settings.fps),
 							width: active.settings.canvasSize.width,
 							height: active.settings.canvasSize.height,
 						},
