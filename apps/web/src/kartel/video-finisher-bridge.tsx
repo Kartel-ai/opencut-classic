@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { frameRateToFloat } from "@/fps/utils";
+import { getClipTimeAtSourceTime, getSourceTimeAtClipTime } from "@/retime/resolve";
 import { processMediaAssets } from "@/media/processing";
 import type { MediaAsset } from "@/media/types";
 import { storageService } from "@/services/storage/service";
@@ -139,9 +140,43 @@ export function repairPreviewUpdate({
 	return { trackId: repair.trackId, elementId: repair.id, updates };
 }
 
+export type RepairCandidate = RepairInsertion["candidate"];
+
+// One exact Studio media candidate: Asset Library identity, a transport URL, and the bytes'
+// declared MIME, size, and checksum that the editor re-verifies before import.
+export function normalizedCandidate({ value, expectedMIME }: {
+	value: unknown;
+	expectedMIME: string | readonly string[];
+}): RepairCandidate | null {
+	if (!isRecord(value)) return null;
+	const candidate = value;
+	const mimeType = String(candidate.mimeType ?? "").toLowerCase();
+	const durationSeconds = Number(candidate.durationSeconds);
+	const byteSize = Number(candidate.byteSize);
+	if (
+		!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 6 * 60 * 60 ||
+		!Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > MAX_SOURCE_BYTES ||
+		typeof candidate.assetId !== "string" || candidate.assetId.length < 1 || candidate.assetId.length > 160 ||
+		typeof candidate.versionId !== "string" || candidate.versionId.length < 1 || candidate.versionId.length > 160 ||
+		typeof candidate.name !== "string" || candidate.name.trim().length < 1 || candidate.name.length > 255 ||
+		typeof candidate.src !== "string" ||
+		typeof candidate.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(candidate.sha256) ||
+		(Array.isArray(expectedMIME) ? !expectedMIME.includes(mimeType) : mimeType !== expectedMIME)
+	) return null;
+	return {
+		assetId: candidate.assetId,
+		versionId: candidate.versionId,
+		name: candidate.name.trim(),
+		src: candidate.src,
+		mimeType,
+		byteSize,
+		sha256: candidate.sha256,
+		durationSeconds,
+	};
+}
+
 export function normalizedRepairInsertion(value: unknown): RepairInsertion | null {
-	if (!isRecord(value) || !isRecord(value.candidate)) return null;
-	const candidate = value.candidate;
+	if (!isRecord(value)) return null;
 	const rawSemanticRole = String(value.semanticRole ?? "");
 	let semanticRole: RepairInsertion["semanticRole"];
 	switch (rawSemanticRole) {
@@ -155,45 +190,174 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 		default:
 			return null;
 	}
-	const mimeType = String(candidate.mimeType ?? "").toLowerCase();
 	const startSeconds = Number(value.startSeconds);
 	const endSeconds = Number(value.endSeconds);
-	const durationSeconds = Number(candidate.durationSeconds);
-	const byteSize = Number(candidate.byteSize);
+	// An operator recording is PCM WAV; a synthesized voice line arrives from the provider as MP3.
 	const expectedMIME = semanticRole === "replacement_voice"
-		? "audio/wav"
+		? ["audio/wav", "audio/mpeg"]
 		: semanticRole === "keyframe"
 			? ["image/png", "image/jpeg", "image/webp"]
 			: "video/mp4";
+	const candidate = normalizedCandidate({ value: value.candidate, expectedMIME });
 	if (
+		!candidate ||
 		typeof value.clipId !== "string" || value.clipId.length < 1 || value.clipId.length > 160 ||
-		!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 6 * 60 * 60 ||
-		!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 6 * 60 * 60 ||
-		!Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > MAX_SOURCE_BYTES ||
-		typeof candidate.assetId !== "string" || candidate.assetId.length < 1 || candidate.assetId.length > 160 ||
-		typeof candidate.versionId !== "string" || candidate.versionId.length < 1 || candidate.versionId.length > 160 ||
-		typeof candidate.name !== "string" || candidate.name.trim().length < 1 || candidate.name.length > 255 ||
-		typeof candidate.src !== "string" ||
-		typeof candidate.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(candidate.sha256) ||
-		(Array.isArray(expectedMIME) ? !expectedMIME.includes(mimeType) : mimeType !== expectedMIME)
+		!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 6 * 60 * 60
 	) return null;
-	if (semanticRole !== "keyframe" && durationSeconds + 0.05 < endSeconds - startSeconds) return null;
+	if (semanticRole !== "keyframe" && candidate.durationSeconds + 0.05 < endSeconds - startSeconds) return null;
 	return {
 		semanticRole,
 		clipId: value.clipId,
 		startSeconds,
 		endSeconds,
-		candidate: {
-			assetId: candidate.assetId,
-			versionId: candidate.versionId,
-			name: candidate.name.trim(),
-			src: candidate.src,
-			mimeType,
-			byteSize,
-			sha256: candidate.sha256,
-			durationSeconds,
-		},
+		candidate,
 	};
+}
+
+// Breakdown request: the shots Studio detected (interior cut times on the source clip, with the
+// labels each resulting piece takes) and any separated audio layers that are ready to sit on
+// their own tracks. Splits are non-destructive timeline edits; the source media is untouched.
+export const MAX_BREAKDOWN_SHOTS = 120;
+export type HostBreakdown = {
+	sourceClipId: string | null;
+	cuts: number[];
+	shots: { id: string; label: string; startSeconds: number; endSeconds: number }[];
+	stems: { role: "dialogue" | "background"; label: string; candidate: RepairCandidate }[];
+};
+
+// Stems arrive as the provider's MP3 (isolated voice) or a browser-derived PCM WAV (background).
+const STEM_MIME_TYPES = ["audio/mpeg", "audio/wav"] as const;
+
+export function normalizedBreakdown(value: unknown): HostBreakdown | null {
+	if (!isRecord(value) || !Array.isArray(value.cuts) || !Array.isArray(value.shots) || !Array.isArray(value.stems)) return null;
+	if (value.cuts.length >= MAX_BREAKDOWN_SHOTS || value.shots.length > MAX_BREAKDOWN_SHOTS || value.stems.length > 3) return null;
+	const cuts: number[] = [];
+	for (const raw of value.cuts) {
+		const seconds = Number(raw);
+		if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 6 * 60 * 60 || (cuts.length && seconds <= cuts[cuts.length - 1])) return null;
+		cuts.push(seconds);
+	}
+	const shots: HostBreakdown["shots"] = [];
+	for (const raw of value.shots) {
+		if (!isRecord(raw)) return null;
+		const startSeconds = Number(raw.startSeconds);
+		const endSeconds = Number(raw.endSeconds);
+		if (
+			typeof raw.id !== "string" || raw.id.length < 1 || raw.id.length > 40 ||
+			typeof raw.label !== "string" || raw.label.trim().length < 1 || raw.label.length > 80 ||
+			!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 6 * 60 * 60
+		) return null;
+		shots.push({ id: raw.id, label: raw.label.trim(), startSeconds, endSeconds });
+	}
+	const stems: HostBreakdown["stems"] = [];
+	for (const raw of value.stems) {
+		if (!isRecord(raw)) return null;
+		const role = String(raw.role ?? "");
+		if (role !== "dialogue" && role !== "background") return null;
+		if (stems.some((stem) => stem.role === role)) return null;
+		const candidate = normalizedCandidate({ value: raw.candidate, expectedMIME: STEM_MIME_TYPES });
+		if (!candidate || typeof raw.label !== "string" || raw.label.trim().length < 1 || raw.label.length > 80) return null;
+		stems.push({ role, label: raw.label.trim(), candidate });
+	}
+	const sourceClipId = typeof value.sourceClipId === "string" && value.sourceClipId.length >= 1 && value.sourceClipId.length <= 160
+		? value.sourceClipId
+		: null;
+	return { sourceClipId, cuts, shots, stems };
+}
+
+export function stemMediaId(stem: HostBreakdown["stems"][number]): string {
+	return `kartel-stem-${stem.role}-${encodeURIComponent(stem.candidate.assetId)}-${encodeURIComponent(stem.candidate.versionId)}`;
+}
+
+// The breakdown describes immutable source time; OpenCut stores timeline time.
+// Use the same retime conversion as its split command, including an existing trim.
+export function breakdownSourceRange(element: TimelineElement) {
+	const retime = "retime" in element ? element.retime : undefined;
+	const startSeconds = mediaTimeToSeconds({ time: element.trimStart });
+	return {
+		startSeconds,
+		endSeconds: startSeconds + getSourceTimeAtClipTime({ clipTime: mediaTimeToSeconds({ time: element.duration }), retime }),
+	};
+}
+
+export function breakdownCutTimelineSeconds({ element, sourceSeconds }: { element: TimelineElement; sourceSeconds: number }): number | null {
+	const range = breakdownSourceRange(element);
+	const retime = "retime" in element ? element.retime : undefined;
+	const offset = getClipTimeAtSourceTime({ sourceTime: sourceSeconds - range.startSeconds, retime });
+	const duration = mediaTimeToSeconds({ time: element.duration });
+	if (!Number.isFinite(offset) || offset <= 0.011 || offset >= duration - 0.011) return null;
+	return mediaTimeToSeconds({ time: element.startTime }) + offset;
+}
+
+export function breakdownSourceAtTimeline({ element, timelineSeconds }: { element: TimelineElement; timelineSeconds: number }): number | null {
+	const offset = timelineSeconds - mediaTimeToSeconds({ time: element.startTime });
+	if (!Number.isFinite(offset) || offset < 0 || offset >= mediaTimeToSeconds({ time: element.duration })) return null;
+	return breakdownSourceRange(element).startSeconds + getSourceTimeAtClipTime({
+		clipTime: offset, retime: "retime" in element ? element.retime : undefined,
+	});
+}
+
+function selectionCoordinates({ element, sourceMediaId }: { element: TimelineElement; sourceMediaId: string | null }) {
+	const source = element.type === "video" && element.mediaId === sourceMediaId ? breakdownSourceRange(element) : null;
+	return {
+		clipId: element.id,
+		startSeconds: mediaTimeToSeconds({ time: element.startTime }),
+		endSeconds: mediaTimeToSeconds({ time: addMediaTime({ a: element.startTime, b: element.duration }) }),
+		sourceStartSeconds: source?.startSeconds ?? null,
+		sourceEndSeconds: source?.endSeconds ?? null,
+	};
+}
+
+export function videoFinisherSourceLayout({ tracks, sourceMediaId }: { tracks: readonly TimelineTrack[]; sourceMediaId: string | null }) {
+	return {
+		durationSeconds: Math.max(0, ...tracks.flatMap((track) => track.elements.map((element) => mediaTimeToSeconds({ time: addMediaTime({ a: element.startTime, b: element.duration }) })))),
+		clips: tracks.flatMap((track) => track.elements
+			.filter((element) => sourceMediaId !== null && element.type === "video" && element.mediaId === sourceMediaId)
+			.map((element) => selectionCoordinates({ element, sourceMediaId }))),
+	};
+}
+
+export function breakdownStemGeometry({ piece, stemDurationSeconds }: { piece: TimelineElement; stemDurationSeconds: number }) {
+	const range = breakdownSourceRange(piece);
+	if (piece.type !== "video" || !Number.isFinite(stemDurationSeconds) || stemDurationSeconds < range.endSeconds) {
+		throw new Error("The separated layer does not cover the exact source range. Original audio is unchanged.");
+	}
+	return {
+		startTime: piece.startTime,
+		duration: piece.duration,
+		trimStart: piece.trimStart,
+		trimEnd: mediaTimeFromSeconds({ seconds: stemDurationSeconds - range.endSeconds }),
+		sourceDuration: mediaTimeFromSeconds({ seconds: stemDurationSeconds }),
+		retime: piece.retime,
+	};
+}
+
+function findBreakdownStemElement({ tracks, mediaId, piece }: { tracks: readonly TimelineTrack[]; mediaId: string; piece: TimelineElement }) {
+	for (const track of tracks) {
+		for (const element of track.elements) {
+			if (element.type === "audio" && "mediaId" in element && element.mediaId === mediaId &&
+				element.startTime === piece.startTime && element.duration === piece.duration && element.trimStart === piece.trimStart &&
+				(element.retime?.rate ?? 1) === ("retime" in piece ? piece.retime?.rate ?? 1 : 1)) {
+				return { id: element.id, trackId: track.id, mutedTrack: "muted" in track && track.muted };
+			}
+		}
+	}
+	return null;
+}
+
+// Exact clip selection stays authoritative. Source coordinates never fall back to
+// an unrelated clip at the same timeline position.
+export type RangeSelection = { clipId: string | null; startSeconds: number | null; sourceSeconds: number | null };
+
+export function normalizedRangeSelection(value: unknown): RangeSelection | null {
+	if (!isRecord(value)) return null;
+	const clipId = typeof value.clipId === "string" && value.clipId.length >= 1 && value.clipId.length <= 160 ? value.clipId : null;
+	const startSeconds = value.startSeconds === undefined || value.startSeconds === null ? null : Number(value.startSeconds);
+	const sourceSeconds = value.sourceSeconds === undefined || value.sourceSeconds === null ? null : Number(value.sourceSeconds);
+	if (startSeconds !== null && (!Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 6 * 60 * 60)) return null;
+	if (sourceSeconds !== null && (!Number.isFinite(sourceSeconds) || sourceSeconds < 0 || sourceSeconds > 6 * 60 * 60 || startSeconds !== null)) return null;
+	if (!clipId && startSeconds === null && sourceSeconds === null) return null;
+	return { clipId, startSeconds, sourceSeconds };
 }
 
 export function studioOrigin(
@@ -385,13 +549,14 @@ function safeSourceName(name: unknown): string {
 function safeCandidateName({ name, mimeType }: { name: string; mimeType: string }): string {
 	const value = name.trim().replace(/[\\/\r\n]/g, "-").slice(0, 240);
 	const extension = mimeType === "audio/wav" ? ".wav"
+		: mimeType === "audio/mpeg" ? ".mp3"
 		: mimeType === "image/png" ? ".png"
 			: mimeType === "image/jpeg" ? ".jpg"
 				: mimeType === "image/webp" ? ".webp" : ".mp4";
 	return value.toLowerCase().endsWith(extension) ? value : `${value || "repair-candidate"}${extension}`;
 }
 
-async function repairCandidateFile(insertion: RepairInsertion): Promise<File> {
+async function repairCandidateFile(insertion: { candidate: RepairCandidate }): Promise<File> {
 	const candidate = insertion.candidate;
 	let url: URL;
 	try {
@@ -495,6 +660,7 @@ export function KartelVideoFinisherBridge({
 	> | null>(null);
 	const applyingRef = useRef(false);
 	const sourceLoadsRef = useRef(new Map<string, Promise<MediaAsset>>());
+	const sourceMediaIdRef = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (!hostOrigin || window.parent === window) return;
@@ -576,6 +742,7 @@ export function KartelVideoFinisherBridge({
 					await editor.project.loadProject({ id: projectId, preserveActiveScene: true });
 				}
 				const source = await ensureSource(project);
+				sourceMediaIdRef.current = source.id;
 				// Studio owns the title: the OpenCut project carries the exact source name, never
 				// "Untitled Project", so the embedded editor reads as the operator's video.
 				const desiredName = String(project.source?.name ?? "").trim().slice(0, 240);
@@ -622,6 +789,7 @@ export function KartelVideoFinisherBridge({
 						issueCount: project.issueIds?.length ?? 0,
 						repairMode: project.repairs ? "prepared" : "none",
 						openCutCommit: OPEN_CUT_COMMIT,
+						sourceLayout: sourceLayout(),
 					},
 				});
 			} finally {
@@ -845,6 +1013,159 @@ export function KartelVideoFinisherBridge({
 			post({ type: "MARKERS_SET", identity: message, payload: { count: markers.length } });
 		};
 
+		// Breakdown: split the source clip at each detected cut, name each piece after its shot, and
+		// seat any ready audio layer on its own track. Idempotent: a cut that already exists is not
+		// split again and a stem already present is reported as replayed.
+		const applyBreakdown = async (message: VideoFinisherHostMessage) => {
+			const breakdown = normalizedBreakdown(message.payload);
+			if (!breakdown) throw new Error("Studio returned an invalid breakdown request.");
+			const sourceMediaId = sourceMediaIdRef.current;
+			const isSourceElement = (element: TimelineElement) =>
+				sourceMediaId !== null && element.type === "video" && element.mediaId === sourceMediaId;
+			const mainTrack = () => editor.scenes.getActiveScene().tracks.main;
+			if (!mainTrack().elements.some(isSourceElement)) {
+				throw new Error("The source clip is not present in this project revision.");
+			}
+			// Decode both exact versions before changing the timeline. A partial pair
+			// must never replace the mix or leave an extra audible dialogue layer.
+			if (breakdown.stems.length === 1) throw new Error("Both dialogue and background layers must be ready before applying separated audio.");
+			const decodedStems = new Map<string, Awaited<ReturnType<typeof processMediaAssets>>[number]>();
+			for (const stem of breakdown.stems) {
+				const file = await repairCandidateFile({ candidate: stem.candidate });
+				const [processed] = await processMediaAssets({ files: [file] });
+				if (!processed || processed.type !== "audio" || !Number.isFinite(processed.duration)) throw new Error(`OpenCut could not decode the ${stem.label.toLowerCase()} layer.`);
+				for (const piece of mainTrack().elements.filter(isSourceElement)) breakdownStemGeometry({ piece, stemDurationSeconds: processed.duration ?? 0 });
+				decodedStems.set(stemMediaId(stem), processed);
+			}
+			const startOf = (element: TimelineElement) => mediaTimeToSeconds({ time: element.startTime });
+			applyingRef.current = true;
+			let splitCount = 0;
+			try {
+				for (const cut of breakdown.cuts) {
+					const track = mainTrack();
+					for (const target of track.elements.filter(isSourceElement)) {
+						const seconds = breakdownCutTimelineSeconds({ element: target, sourceSeconds: cut });
+						if (seconds === null) continue;
+						editor.timeline.splitElements({
+							elements: [{ trackId: track.id, elementId: target.id }],
+							splitTime: mediaTimeFromSeconds({ seconds }),
+						});
+						splitCount += 1;
+					}
+				}
+				const track = mainTrack();
+				const pieces = track.elements.filter(isSourceElement).sort((a, b) => startOf(a) - startOf(b));
+				// Every source piece takes the name of the shot it starts inside, so a merged shot that
+				// still spans two timeline pieces reads as one shot in both places.
+				const shotOf = (piece: TimelineElement) =>
+					breakdown.shots.find((shot) => breakdownSourceRange(piece).startSeconds >= shot.startSeconds - 0.011 && breakdownSourceRange(piece).startSeconds < shot.endSeconds - 0.011) ?? null;
+				const shots = breakdown.shots.map((shot) => ({
+					...shot,
+					elementIds: pieces.filter((piece) => shotOf(piece)?.id === shot.id).map((piece) => piece.id),
+					trackId: track.id,
+				}));
+				// A single-shot video keeps its own clip name; shot labels only help once there are several.
+				const renames = breakdown.shots.length < 2 ? [] : pieces.flatMap((piece) => {
+					const shot = shotOf(piece);
+					if (!shot || piece.name === shot.label) return [];
+					return [{ trackId: track.id, elementId: piece.id, patch: { name: shot.label } as Partial<TimelineElement> }];
+				});
+				if (renames.length) editor.timeline.updateElements({ updates: renames });
+
+				const stems: { role: string; elementId: string; trackId: string; replayed: boolean }[] = [];
+				for (const stem of breakdown.stems) {
+					const mediaId = stemMediaId(stem);
+					const processed = decodedStems.get(mediaId);
+					if (!processed) throw new Error("The decoded audio pair is incomplete.");
+					const created = editor.media.getAssets().find((asset) => asset.id === mediaId)
+						?? await editor.media.addMediaAsset({ projectId, asset: { ...processed, id: mediaId } });
+					if (!created || created.type !== "audio") throw new Error(`The ${stem.label.toLowerCase()} layer is not an audio file.`);
+					for (const piece of pieces) {
+						const existing = findBreakdownStemElement({ tracks: editor.scenes.getActiveScene().tracks.audio, mediaId, piece });
+						if (existing) {
+							if (existing.mutedTrack) throw new Error("A separated audio track is muted. Review it before applying the pair.");
+							stems.push({ role: stem.role, elementId: existing.id, trackId: existing.trackId, replayed: true });
+							continue;
+						}
+						const element = buildElementFromMedia({ mediaId, mediaType: "audio", name: stem.label, duration: piece.duration, startTime: piece.startTime });
+						if (element.type !== "audio") throw new Error("The separated layer is not audio.");
+						editor.timeline.insertElement({
+							element: { ...element, ...breakdownStemGeometry({ piece, stemDurationSeconds: created.duration ?? 0 }), params: { ...element.params, muted: true } },
+							placement: { mode: "auto", trackType: "audio" },
+						});
+						const inserted = findBreakdownStemElement({ tracks: editor.scenes.getActiveScene().tracks.audio, mediaId, piece });
+						if (!inserted || inserted.mutedTrack) throw new Error(`OpenCut could not confirm the ${stem.label.toLowerCase()} layer. New pieces remain muted.`);
+						stems.push({ role: stem.role, elementId: inserted.id, trackId: inserted.trackId, replayed: false });
+					}
+				}
+				// Switch the complete pair in one timeline command. Superseded exact-version
+				// layers stay recoverable but silent; unrelated operator audio is untouched.
+				if (stems.length === pieces.length * 2) {
+					const active = new Set(stems.map((stem) => stem.elementId));
+					const scene = editor.scenes.getActiveScene();
+					const updates = [scene.tracks.main, ...scene.tracks.audio].flatMap((audioTrack) => audioTrack.elements.flatMap((element) => {
+						if (!canElementHaveAudio(element)) return [];
+						if (!isSourceElement(element) && !("mediaId" in element && element.mediaId.startsWith("kartel-stem-"))) return [];
+						const muted = !active.has(element.id);
+						if (element.params.muted === muted) return [];
+						return [{ trackId: audioTrack.id, elementId: element.id, patch: { params: { ...element.params, muted } } as Partial<TimelineElement> }];
+					}));
+					if (updates.length) editor.timeline.updateElements({ updates });
+				}
+				await editor.save.flush();
+				identityRef.current = message;
+				post({
+					type: "BREAKDOWN_APPLIED",
+					identity: message,
+					payload: {
+						shots,
+						stems,
+						splitCount,
+						pieceCount: pieces.length,
+						sourceLayout: sourceLayout(),
+						replayed: splitCount === 0 && stems.every((stem) => stem.replayed),
+					},
+				});
+			} finally {
+				applyingRef.current = false;
+			}
+		};
+
+		// Selection from the finishing rail: pick one clip (by id, or the main-track piece that starts
+		// at a time), park the playhead on it, and let the ordinary selection event follow.
+		const selectRange = async (message: VideoFinisherHostMessage) => {
+			const request = normalizedRangeSelection(message.payload);
+			if (!request) throw new Error("Studio returned an invalid selection request.");
+			const scene = editor.scenes.getActiveScene();
+			const tracks = [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio];
+			let found: { track: TimelineTrack; element: TimelineElement } | null = null;
+			for (const track of tracks) {
+				for (const element of track.elements) {
+					const startSeconds = mediaTimeToSeconds({ time: element.startTime });
+					const sourceRange = breakdownSourceRange(element);
+					if (
+						(request.clipId !== null && element.id === request.clipId) ||
+						(request.clipId === null && track.id === scene.tracks.main.id && request.startSeconds !== null && Math.abs(startSeconds - request.startSeconds) < 0.011) ||
+						(request.clipId === null && request.sourceSeconds !== null && element.type === "video" && element.mediaId === sourceMediaIdRef.current && request.sourceSeconds >= sourceRange.startSeconds - 0.011 && request.sourceSeconds < sourceRange.endSeconds - 0.011)
+					) {
+						found = { track, element };
+						break;
+					}
+				}
+				if (found) break;
+			}
+			if (!found) throw new Error("No clip starts at that point in this project revision.");
+			editor.selection.setSelectedElements({ elements: [{ trackId: found.track.id, elementId: found.element.id }] });
+			editor.playback.pause();
+			editor.playback.seek({ time: found.element.startTime });
+			identityRef.current = message;
+			post({
+				type: "RANGE_SELECTED",
+				identity: message,
+				payload: selectionCoordinates({ element: found.element, sourceMediaId: sourceMediaIdRef.current }),
+			});
+		};
+
 		const exportProject = async (message: VideoFinisherHostMessage) => {
 			post({
 				type: "EXPORT_STARTED",
@@ -983,6 +1304,10 @@ export function KartelVideoFinisherBridge({
 											? previewRange(message)
 											: message.type === "SET_MARKERS"
 												? setMarkers(message)
+												: message.type === "APPLY_BREAKDOWN"
+													? applyBreakdown(message)
+													: message.type === "SELECT_RANGE"
+														? selectRange(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -997,6 +1322,10 @@ export function KartelVideoFinisherBridge({
 										? "PREVIEW_FAILED"
 										: message.type === "SET_MARKERS"
 											? "MARKERS_FAILED"
+											: message.type === "APPLY_BREAKDOWN"
+												? "BREAKDOWN_FAILED"
+												: message.type === "SELECT_RANGE"
+													? "SELECT_FAILED"
 											: "EXPORT_FAILED",
 					identity: message,
 					payload: {
@@ -1009,31 +1338,26 @@ export function KartelVideoFinisherBridge({
 			);
 		};
 
+		const sourceLayout = () => {
+			const tracks = editor.scenes.getActiveScene().tracks;
+			return videoFinisherSourceLayout({ tracks: [...tracks.overlay, tracks.main, ...tracks.audio], sourceMediaId: sourceMediaIdRef.current });
+		};
 		const changed = () => {
 			if (applyingRef.current || !identityRef.current) return;
-			post({ type: "PROJECT_CHANGED", identity: identityRef.current });
+			post({ type: "PROJECT_CHANGED", identity: identityRef.current, payload: { sourceLayout: sourceLayout() } });
+			selected();
+			lastPlayheadSeconds = -1;
+			playhead();
 		};
 		const selected = () => {
 			if (applyingRef.current || !identityRef.current) return;
 			const [selection] = editor.timeline.getElementsWithTracks({
 				elements: editor.selection.getSelectedElements(),
 			});
-			if (!selection) return;
 			post({
 				type: "SELECTION_CHANGED",
 				identity: identityRef.current,
-				payload: {
-					clipId: selection.element.id,
-					startSeconds: mediaTimeToSeconds({
-						time: selection.element.startTime,
-					}),
-					endSeconds: mediaTimeToSeconds({
-						time: addMediaTime({
-							a: selection.element.startTime,
-							b: selection.element.duration,
-						}),
-					}),
-				},
+				payload: selection ? selectionCoordinates({ element: selection.element, sourceMediaId: sourceMediaIdRef.current }) : null,
 			});
 		};
 		// The playhead streams to Studio (throttled) so the finishing rail can mark in and out
@@ -1049,7 +1373,11 @@ export function KartelVideoFinisherBridge({
 			if (!playing && seconds === lastPlayheadSeconds) return;
 			lastPlayheadPost = now;
 			lastPlayheadSeconds = seconds;
-			post({ type: "PLAYHEAD_CHANGED", identity: identityRef.current, payload: { seconds, playing } });
+			const sourcePositions = editor.scenes.getActiveScene().tracks.main.elements
+				.filter((element) => element.type === "video" && element.mediaId === sourceMediaIdRef.current)
+				.map((element) => breakdownSourceAtTimeline({ element, timelineSeconds: seconds }))
+				.filter((position) => position !== null);
+			post({ type: "PLAYHEAD_CHANGED", identity: identityRef.current, payload: { seconds, playing, sourceSeconds: sourcePositions.length === 1 ? sourcePositions[0] : null } });
 		};
 		window.addEventListener("message", onMessage);
 		post({

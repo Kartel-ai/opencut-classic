@@ -9,16 +9,25 @@ import {
 } from "../video-finisher-protocol";
 import {
 	KARTEL_MARKER_PREFIX,
+	breakdownCutTimelineSeconds,
+	breakdownSourceAtTimeline,
+	breakdownSourceRange,
+	breakdownStemGeometry,
 	kartelMarkerBookmarks,
+	normalizedBreakdown,
 	normalizedMarkers,
 	normalizedPreviewRange,
+	normalizedRangeSelection,
 	normalizedRepairInsertion,
 	repairMediaId,
 	repairPreviewUpdate,
 	sourceFile,
+	stemMediaId,
 	videoFinisherExportFrameRate,
+	videoFinisherSourceLayout,
 } from "../video-finisher-bridge";
-import { mediaTimeFromSeconds } from "@/wasm";
+import { mediaTimeFromSeconds, mediaTimeToSeconds } from "@/wasm";
+import type { VideoElement } from "@/timeline/types";
 
 describe("buildVideoFinisherBridgeMessage", () => {
 	test("keeps the response type authoritative when the host identity is a complete request", () => {
@@ -101,6 +110,10 @@ describe("normalizedRepairInsertion", () => {
 			},
 		};
 		expect(normalizedRepairInsertion(input)).toEqual(input);
+		// A synthesized voice line arrives from the provider as MP3.
+		const spoken = { ...input, candidate: { ...input.candidate, name: "line.mp3", mimeType: "audio/mpeg" } };
+		expect(normalizedRepairInsertion(spoken)).toEqual(spoken);
+		expect(normalizedRepairInsertion({ ...input, candidate: { ...input.candidate, mimeType: "video/mp4" } })).toBeNull();
 		expect(normalizedRepairInsertion({
 			...input,
 			candidate: { ...input.candidate, durationSeconds: 1.0 },
@@ -212,5 +225,95 @@ describe("kartelMarkerBookmarks", () => {
 		expect(bookmarks[2].duration).toBeUndefined();
 		expect(normalizedMarkers({ markers: [{ id: "x", startSeconds: 0, endSeconds: 1, note: "n", category: "colour" }] })).toBeNull();
 		expect(normalizedMarkers({ markers: "nope" })).toBeNull();
+	});
+});
+
+describe("normalizedBreakdown", () => {
+	const candidate = {
+		assetId: "asset-1",
+		versionId: "version-1",
+		name: "Dialogue",
+		src: "https://studio.example/stems/dialogue.wav",
+		mimeType: "audio/wav",
+		byteSize: 1024,
+		sha256: "a".repeat(64),
+		durationSeconds: 12,
+	};
+
+	test("accepts ascending interior cuts, labelled shots, and audio-only stems", () => {
+		const breakdown = normalizedBreakdown({
+			sourceClipId: "clip-source",
+			cuts: [3, 7.5],
+			shots: [
+				{ id: "shot-01", label: "Shot 1", startSeconds: 0, endSeconds: 3 },
+				{ id: "shot-02", label: "Shot 2", startSeconds: 3, endSeconds: 7.5 },
+				{ id: "shot-03", label: "Shot 3", startSeconds: 7.5, endSeconds: 12 },
+			],
+			stems: [{ role: "dialogue", label: "Dialogue", candidate }],
+		});
+		expect(breakdown?.cuts).toEqual([3, 7.5]);
+		expect(breakdown?.shots.map((shot) => shot.label)).toEqual(["Shot 1", "Shot 2", "Shot 3"]);
+		expect(breakdown?.stems[0]?.candidate.mimeType).toBe("audio/wav");
+		expect(stemMediaId({ role: "dialogue", label: "Dialogue", candidate })).toBe("kartel-stem-dialogue-asset-1-version-1");
+		expect(stemMediaId({ role: "dialogue", label: "Dialogue", candidate: { ...candidate, versionId: "version-2" } })).not.toBe(stemMediaId({ role: "dialogue", label: "Dialogue", candidate }));
+	});
+
+	test("rejects unordered cuts, non-audio stems, and duplicate stem roles", () => {
+		const shots = [{ id: "shot-01", label: "Shot 1", startSeconds: 0, endSeconds: 5 }];
+		expect(normalizedBreakdown({ cuts: [7, 3], shots, stems: [] })).toBeNull();
+		expect(normalizedBreakdown({ cuts: [0], shots, stems: [] })).toBeNull();
+		expect(normalizedBreakdown({ cuts: [], shots, stems: [{ role: "music", label: "Music", candidate: { ...candidate, mimeType: "video/mp4" } }] })).toBeNull();
+		expect(normalizedBreakdown({ cuts: [], shots, stems: [
+			{ role: "background", label: "Music & effects", candidate },
+			{ role: "background", label: "Music & effects again", candidate },
+		] })).toBeNull();
+		expect(normalizedBreakdown({ cuts: [], shots, stems: [{ role: "music", label: "Music", candidate }] })).toBeNull();
+		expect(normalizedBreakdown({ cuts: [], shots, stems: [{ role: "background", label: "Music & effects", candidate: { ...candidate, mimeType: "audio/mpeg" } }] })?.stems[0]?.candidate.mimeType).toBe("audio/mpeg");
+		expect(normalizedBreakdown(null)).toBeNull();
+	});
+});
+
+describe("normalizedRangeSelection", () => {
+	test("selects by clip id or by a main-track start time, never by nothing", () => {
+		expect(normalizedRangeSelection({ clipId: "clip-2" })).toEqual({ clipId: "clip-2", startSeconds: null, sourceSeconds: null });
+		expect(normalizedRangeSelection({ startSeconds: 3.5 })).toEqual({ clipId: null, startSeconds: 3.5, sourceSeconds: null });
+		expect(normalizedRangeSelection({ sourceSeconds: 8 })).toEqual({ clipId: null, startSeconds: null, sourceSeconds: 8 });
+		expect(normalizedRangeSelection({ sourceSeconds: 8, startSeconds: 3 })).toBeNull();
+		expect(normalizedRangeSelection({ sourceSeconds: -1 })).toBeNull();
+		expect(normalizedRangeSelection({ startSeconds: -1 })).toBeNull();
+		expect(normalizedRangeSelection({})).toBeNull();
+	});
+});
+
+describe("breakdown source and timeline coordinates", () => {
+	const seconds = (value: number) => mediaTimeFromSeconds({ seconds: value });
+	const piece: VideoElement = {
+		id: "piece-1", mediaId: "source-1", name: "Trimmed source", type: "video",
+		startTime: seconds(20), duration: seconds(4), trimStart: seconds(6), trimEnd: seconds(10),
+		params: { volume: 0, muted: false }, retime: { rate: 2 },
+	};
+
+	test("maps source cuts through a move, trim and speed change without splitting removed frames", () => {
+		expect(breakdownSourceRange(piece)).toEqual({ startSeconds: 6, endSeconds: 14 });
+		const track = { id: "main", name: "Main", type: "video" as const, elements: [piece, { ...piece, id: "replacement", mediaId: "other" }] };
+		expect(videoFinisherSourceLayout({ tracks: [track], sourceMediaId: "source-1" })).toEqual({ durationSeconds: 24, clips: [{ clipId: "piece-1", startSeconds: 20, endSeconds: 24, sourceStartSeconds: 6, sourceEndSeconds: 14 }] });
+		expect(videoFinisherSourceLayout({ tracks: [track], sourceMediaId: null }).clips).toEqual([]);
+		expect(breakdownCutTimelineSeconds({ element: piece, sourceSeconds: 10 })).toBe(22);
+		expect(breakdownSourceAtTimeline({ element: piece, timelineSeconds: 22 })).toBe(10);
+		for (const time of [19, 24, 30, Number.NaN]) expect(breakdownSourceAtTimeline({ element: piece, timelineSeconds: time })).toBeNull();
+		for (const cut of [0, 6, 14, 20, Number.NaN]) expect(breakdownCutTimelineSeconds({ element: piece, sourceSeconds: cut })).toBeNull();
+		const normal = { ...piece, startTime: seconds(0), trimStart: seconds(0), duration: seconds(15), retime: undefined };
+		expect(breakdownCutTimelineSeconds({ element: normal, sourceSeconds: 10 })).toBe(10);
+	});
+
+	test("seats each audio layer at the matching timeline range and preserves its source offset and speed", () => {
+		const geometry = breakdownStemGeometry({ piece, stemDurationSeconds: 30 });
+		expect(mediaTimeToSeconds({ time: geometry.startTime })).toBe(20);
+		expect(mediaTimeToSeconds({ time: geometry.duration })).toBe(4);
+		expect(mediaTimeToSeconds({ time: geometry.trimStart })).toBe(6);
+		expect(mediaTimeToSeconds({ time: geometry.trimEnd })).toBe(16);
+		expect(geometry.retime).toEqual({ rate: 2 });
+		expect(() => breakdownStemGeometry({ piece, stemDurationSeconds: 13.99 })).toThrow("does not cover");
+		expect(() => breakdownStemGeometry({ piece, stemDurationSeconds: Number.NaN })).toThrow("does not cover");
 	});
 });

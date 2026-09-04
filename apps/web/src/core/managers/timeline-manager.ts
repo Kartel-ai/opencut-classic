@@ -717,16 +717,13 @@ export class TimelineManager {
 			const existingOverlay = this.previewOverlay.get(elementId);
 			const changed = Object.entries(elementUpdates).some(([key, value]) => {
 				return !Object.is(
-					existingOverlay?.[key as keyof TimelineElement],
+					existingOverlay ? Reflect.get(existingOverlay, key) : undefined,
 					value,
 				);
 			});
 			if (changed) {
 				changedOverlayCount += 1;
-				const mergedOverlay = {
-					...existingOverlay,
-					...elementUpdates,
-				} as Partial<TimelineElement>;
+				const mergedOverlay = Object.assign({}, existingOverlay, elementUpdates);
 				this.previewOverlay.set(elementId, mergedOverlay);
 			}
 		}
@@ -800,7 +797,7 @@ export class TimelineManager {
 			const nextElements = track.elements.map((element) => {
 				const overlay = this.previewOverlay.get(element.id);
 				return overlay
-					? ({ ...element, ...overlay } as TimelineElement)
+					? Object.assign({}, element, overlay)
 					: element;
 			});
 

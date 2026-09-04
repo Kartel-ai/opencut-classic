@@ -1,4 +1,4 @@
-FROM oven/bun:alpine AS base
+FROM oven/bun:1.2.18-alpine AS base
 
 FROM base AS builder
 
@@ -16,7 +16,7 @@ COPY bun.lock bun.lock
 COPY turbo.json turbo.json
 
 COPY apps/web/package.json apps/web/package.json
-RUN bun install
+RUN bun install --frozen-lockfile
 
 COPY apps/web/ apps/web/
 

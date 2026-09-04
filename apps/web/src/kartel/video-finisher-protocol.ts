@@ -24,6 +24,8 @@ export const VIDEO_FINISHER_HOST_MESSAGE_TYPES = [
 	"RELEASE_EXPORT",
 	"PREVIEW_RANGE",
 	"SET_MARKERS",
+	"APPLY_BREAKDOWN",
+	"SELECT_RANGE",
 ] as const;
 
 export type VideoFinisherHostMessage = {

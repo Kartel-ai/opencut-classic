@@ -104,9 +104,9 @@ export function TimelineBookmarksRow({
 						handleRulerTrackingMouseDown(event);
 					}}
 				/>
-				{bookmarks.map((bookmark) => (
+				{bookmarks.map((bookmark, index) => (
 					<TimelineBookmark
-						key={`bookmark-${bookmark.time}`}
+						key={`bookmark-${index}-${bookmark.time}`}
 						bookmark={bookmark}
 						zoomLevel={zoomLevel}
 						dragState={dragState}
