@@ -1,6 +1,7 @@
-FROM oven/bun:1.2.18-alpine AS base
+FROM oven/bun:1.2.18-alpine AS bun
 
-FROM base AS builder
+FROM node:22-alpine AS builder
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 
@@ -38,7 +39,9 @@ ENV FREESOUND_CLIENT_ID=$FREESOUND_CLIENT_ID
 ENV FREESOUND_API_KEY=$FREESOUND_API_KEY
 
 WORKDIR /app/apps/web
-RUN bun run build
+# Next prerender imports WebAssembly too. Use Node explicitly at build time,
+# just as the production server does; Bun remains the frozen package installer.
+RUN node ../../node_modules/next/dist/bin/next build
 
 # The compiled editor imports WebAssembly during server rendering. Bun 1.2.18
 # starts the standalone server but lacks WebAssembly.instantiateStreaming there,
