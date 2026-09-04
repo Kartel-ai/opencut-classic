@@ -38,6 +38,7 @@ import {
 	VIDEO_FINISHER_HOST_MESSAGE_TYPES,
 } from "./video-finisher-protocol";
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
+import { createProjectLoadQueue, projectMediaForHost, requireProjectMedia } from "./video-finisher-media";
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
@@ -64,6 +65,7 @@ export type HostProject = {
 		sha256?: string;
 	};
 	document?: unknown;
+	media?: { id: string; file: File; sha256: string }[];
 	issueIds?: string[];
 	repairs?: unknown;
 };
@@ -659,6 +661,7 @@ export function KartelVideoFinisherBridge({
 		"nonce" | "projectId" | "revision" | "operationId"
 	> | null>(null);
 	const applyingRef = useRef(false);
+	const loadQueueRef = useRef(createProjectLoadQueue());
 	const sourceLoadsRef = useRef(new Map<string, Promise<MediaAsset>>());
 	const sourceMediaIdRef = useRef<string | null>(null);
 
@@ -743,6 +746,22 @@ export function KartelVideoFinisherBridge({
 				}
 				const source = await ensureSource(project);
 				sourceMediaIdRef.current = source.id;
+				// Rebuild imported dependencies from Studio custody, including in a fresh browser.
+				if (project.media) {
+					if (!Array.isArray(project.media) || project.media.length > 64) throw new Error("Invalid project media manifest.");
+					for (const item of project.media) {
+						if (!item.id || item.id === source.id || !(item.file instanceof Blob) || item.file.size > MAX_SOURCE_BYTES
+							|| await sha256Hex(item.file) !== item.sha256) throw new Error("Project media failed its exact checksum.");
+						const existing = editor.media.getAssets().find((asset) => asset.id === item.id);
+						if (existing && await sha256Hex(existing.file) === item.sha256) continue;
+						if (existing) throw new Error("Cached project media changed identity.");
+						const [processed] = await processMediaAssets({ files: [item.file] });
+						if (!processed || !await editor.media.addMediaAsset({ projectId, asset: { ...processed, id: item.id } })) {
+							throw new Error("OpenCut could not restore required project media.");
+						}
+					}
+				}
+				if (document) requireProjectMedia({ scenes: document.scenes, assets: editor.media.getAssets() });
 				// Studio owns the title: the OpenCut project carries the exact source name, never
 				// "Untitled Project", so the embedded editor reads as the operator's video.
 				const desiredName = String(project.source?.name ?? "").trim().slice(0, 240);
@@ -761,7 +780,7 @@ export function KartelVideoFinisherBridge({
 								"mediaId" in element && element.mediaId === source.id,
 						),
 					);
-				if (!hasTimelineSource) {
+				if (!document && !hasTimelineSource) {
 					editor.timeline.insertElement({
 						placement: {
 							mode: "explicit",
@@ -806,7 +825,10 @@ export function KartelVideoFinisherBridge({
 				type: "PROJECT_SAVED",
 				identity: message,
 				payload: {
-					document: stored.project,
+          // The generated preview is a disposable cache, sometimes larger than
+          // Studio's entire document limit. Timeline/media identity stays intact.
+          document: { ...stored.project, metadata: { ...stored.project.metadata, thumbnail: undefined } },
+					media: projectMediaForHost({ project: stored.project, assets: editor.media.getAssets(), sourceId: sourceMediaIdRef.current }),
 					openCutCommit: OPEN_CUT_COMMIT,
 				},
 			});
@@ -1289,7 +1311,7 @@ export function KartelVideoFinisherBridge({
 				return;
 			const action =
 				message.type === "LOAD_PROJECT"
-					? load(message)
+					? loadQueueRef.current(() => load(message))
 					: message.type === "SAVE_PROJECT"
 						? save(message)
 						: message.type === "INSERT_REPLACEMENT"

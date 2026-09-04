@@ -7,6 +7,7 @@ import { buildScene } from "@/services/renderer/scene-builder";
 import { createTimelineAudioBuffer } from "@/media/audio";
 import { formatTimecode } from "opencut-wasm";
 import { downloadBlob } from "@/utils/browser";
+import { requireProjectMedia } from "@/kartel/video-finisher-media";
 
 type SnapshotResult =
 	| { success: true; blob: Blob; filename: string }
@@ -154,6 +155,7 @@ export class RendererManager {
 		try {
 			const tracks = this.editor.scenes.getActiveScene().tracks;
 			const mediaAssets = this.editor.media.getAssets();
+			requireProjectMedia({ scenes: [{ tracks }], assets: mediaAssets });
 			const activeProject = this.editor.project.getActive();
 
 			if (!activeProject) {

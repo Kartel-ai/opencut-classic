@@ -250,6 +250,7 @@ export class ProjectManager {
 			this.updateMetadata(updatedProject);
 		} catch (error) {
 			console.error("Failed to save project:", error);
+			throw error;
 		}
 	}
 

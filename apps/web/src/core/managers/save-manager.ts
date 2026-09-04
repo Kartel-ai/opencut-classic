@@ -8,6 +8,7 @@ export class SaveManager {
 	private debounceMs: number;
 	private isPaused = false;
 	private isSaving = false;
+	private inFlight: Promise<void> | null = null;
 	private hasPendingSave = false;
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 	private unsubscribeHandlers: Array<() => void> = [];
@@ -63,6 +64,9 @@ export class SaveManager {
 	}
 
 	async flush(): Promise<void> {
+		if (this.isPaused || this.editor.project.getIsLoading() || this.editor.project.getMigrationState().isMigrating) {
+			throw new Error("Wait for the project to finish loading before saving.");
+		}
 		this.hasPendingSave = true;
 		await this.saveNow();
 	}
@@ -77,12 +81,17 @@ export class SaveManager {
 			clearTimeout(this.saveTimer);
 		}
 		this.saveTimer = setTimeout(() => {
-			void this.saveNow();
+			// Autosave leaves failed work dirty; explicit flush reports the failure.
+			void this.saveNow().catch(() => {});
 		}, this.debounceMs);
 	}
 
 	private async saveNow(): Promise<void> {
-		if (this.isSaving) return;
+		if (this.inFlight) {
+			await this.inFlight;
+			await this.saveNow();
+			return;
+		}
 		if (!this.hasPendingSave) return;
 
 		const activeProject = this.editor.project.getActive();
@@ -94,14 +103,18 @@ export class SaveManager {
 		this.hasPendingSave = false;
 		this.clearTimer();
 
+		this.inFlight = this.editor.project.saveCurrentProject();
 		try {
-			await this.editor.project.saveCurrentProject();
+			await this.inFlight;
+		} catch (error) {
+			this.hasPendingSave = true;
+			throw error;
 		} finally {
 			this.isSaving = false;
-			if (this.hasPendingSave) {
-				this.queueSave();
-			}
+			this.inFlight = null;
 		}
+		// A flush is a barrier for edits queued during an earlier write too.
+		if (this.hasPendingSave) await this.saveNow();
 	}
 
 	private clearTimer(): void {

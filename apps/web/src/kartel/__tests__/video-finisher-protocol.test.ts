@@ -94,7 +94,7 @@ describe("videoFinisherExportFrameRate", () => {
 describe("normalizedRepairInsertion", () => {
 	test("keeps one exact bounded replacement and rejects duration or media-role drift", () => {
 		const input = {
-			semanticRole: "replacement_voice",
+      semanticRole: "replacement_voice" as const,
 			clipId: "clip-dialogue-1",
 			startSeconds: 3.25,
 			endSeconds: 4.75,
@@ -159,7 +159,7 @@ describe("sourceFile", () => {
 
 describe("normalizedPreviewRange", () => {
 	test("keeps one bounded compare request and rejects unknown modes or reversed ranges", () => {
-		const input = { mode: "original", mediaId: "kartel-repair-op-1", startSeconds: 2, endSeconds: 6 };
+    const input = { mode: "original" as const, mediaId: "kartel-repair-op-1", startSeconds: 2, endSeconds: 6 };
 		expect(normalizedPreviewRange(input)).toEqual(input);
 		expect(normalizedPreviewRange({ ...input, mode: "repaired" })?.mode).toBe("repaired");
 		expect(normalizedPreviewRange({ ...input, mode: "stop" })?.mode).toBe("stop");
@@ -295,7 +295,7 @@ describe("breakdown source and timeline coordinates", () => {
 
 	test("maps source cuts through a move, trim and speed change without splitting removed frames", () => {
 		expect(breakdownSourceRange(piece)).toEqual({ startSeconds: 6, endSeconds: 14 });
-		const track = { id: "main", name: "Main", type: "video" as const, elements: [piece, { ...piece, id: "replacement", mediaId: "other" }] };
+    const track = { id: "main", name: "Main", type: "video" as const, muted: false, hidden: false, elements: [piece, { ...piece, id: "replacement", mediaId: "other" }] };
 		expect(videoFinisherSourceLayout({ tracks: [track], sourceMediaId: "source-1" })).toEqual({ durationSeconds: 24, clips: [{ clipId: "piece-1", startSeconds: 20, endSeconds: 24, sourceStartSeconds: 6, sourceEndSeconds: 14 }] });
 		expect(videoFinisherSourceLayout({ tracks: [track], sourceMediaId: null }).clips).toEqual([]);
 		expect(breakdownCutTimelineSeconds({ element: piece, sourceSeconds: 10 })).toBe(22);
