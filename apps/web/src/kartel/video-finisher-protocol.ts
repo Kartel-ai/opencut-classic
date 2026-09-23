@@ -30,6 +30,8 @@ export const VIDEO_FINISHER_HOST_MESSAGE_TYPES = [
 	"SET_LAYOUT",
 	"APPLY_EDITS",
 	"UNDO_EDITS",
+	// RS-073: a range of the source as its own MP4, for a reference or an area edit.
+	"EXPORT_CLIP",
 ] as const;
 
 export type VideoFinisherHostMessage = {
