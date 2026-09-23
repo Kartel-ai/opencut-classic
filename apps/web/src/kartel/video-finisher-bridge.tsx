@@ -28,8 +28,18 @@ import {
 	addMediaTime,
 	mediaTimeFromSeconds,
 	mediaTimeToSeconds,
+	roundMediaTime,
 	ZERO_MEDIA_TIME,
 } from "@/wasm";
+import { ALL_FORMATS, BlobSource, BufferTarget, Conversion, Input, Mp4OutputFormat, Output } from "mediabunny";
+import {
+	VIDEO_FINISHER_EDITOR_CAPABILITIES,
+	clipOutputSize,
+	normalizedClipRange,
+	normalizedTakeFit,
+	takeFitGeometrySeconds,
+	type TakeFit,
+} from "./video-finisher-take-fit";
 import type { TProject } from "@/project/types";
 import {
 	buildVideoFinisherBridgeMessage,
@@ -83,6 +93,8 @@ export type RepairInsertion = {
 	clipId: string;
 	startSeconds: number;
 	endSeconds: number;
+	// RS-073: the window of a longer generated take that fills [startSeconds, endSeconds].
+	fit?: TakeFit;
 	candidate: {
 		assetId: string;
 		versionId: string;
@@ -209,14 +221,47 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 		typeof value.clipId !== "string" || value.clipId.length < 1 || value.clipId.length > 160 ||
 		!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 6 * 60 * 60
 	) return null;
-	if (semanticRole !== "keyframe" && candidate.durationSeconds + 0.05 < endSeconds - startSeconds) return null;
+	// A fit is only for generated video takes; its window, not the shot, bounds the take's length.
+	const fit = semanticRole === "replacement_shot" || semanticRole === "insert_shot" || semanticRole === "extended_shot"
+		? normalizedTakeFit({ value: value.fit, targetSeconds: endSeconds - startSeconds })
+		: value.fit === undefined ? undefined : null;
+	if (fit === null) return null;
+	const required = fit ? fit.sourceEndSeconds : endSeconds - startSeconds;
+	if (semanticRole !== "keyframe" && candidate.durationSeconds + 0.05 < required) return null;
 	return {
 		semanticRole,
 		clipId: value.clipId,
 		startSeconds,
 		endSeconds,
+		...(fit ? { fit } : {}),
 		candidate,
 	};
+}
+
+// RS-073: a placed take's window in OpenCut media time. The trim end is derived last so
+// trimStart + duration x rate + trimEnd equals the decoded length exactly, in ticks.
+export function repairTakeGeometry({ fit, duration, sourceDurationSeconds }: { fit: TakeFit; duration: TimelineElement["duration"]; sourceDurationSeconds: number }) {
+	const seconds = takeFitGeometrySeconds({ fit, targetSeconds: mediaTimeToSeconds({ time: duration }), sourceDurationSeconds });
+	const trimStart = mediaTimeFromSeconds({ seconds: seconds.trimStartSeconds });
+	const sourceDuration = mediaTimeFromSeconds({ seconds: sourceDurationSeconds });
+	const played = roundMediaTime({ time: duration * seconds.playbackRate });
+	const trimEnd = sourceDuration - trimStart - played;
+	if (trimEnd < 0) throw new Error("The take is shorter than the window Studio asked for. Nothing was placed.");
+	return {
+		trimStart,
+		trimEnd: roundMediaTime({ time: trimEnd }),
+		sourceDuration,
+		...(seconds.playbackRate === 1 ? {} : { retime: { rate: seconds.playbackRate } }),
+		playbackRate: seconds.playbackRate,
+	};
+}
+
+// What an existing take element plays of its media, for a replayed or observed insertion.
+function placedTakeFit(element: TimelineElement) {
+	if (element.type !== "video") return null;
+	const rate = element.retime?.rate ?? 1;
+	const start = mediaTimeToSeconds({ time: element.trimStart });
+	return { sourceStartSeconds: start, sourceEndSeconds: start + mediaTimeToSeconds({ time: element.duration }) * rate, playbackRate: rate };
 }
 
 // Breakdown request: the shots Studio detected (interior cut times on the source clip, with the
@@ -817,6 +862,7 @@ export function KartelVideoFinisherBridge({
 						repairMode: project.repairs ? "prepared" : "none",
 						openCutCommit: OPEN_CUT_COMMIT,
 						sourceLayout: sourceLayout(),
+						capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES],
 					},
 				});
 			} finally {
@@ -856,7 +902,7 @@ export function KartelVideoFinisherBridge({
 				post({
 					type: "REPLACEMENT_INSERTED",
 					identity: message,
-					payload: { elementId: existing.id, mediaId, replayed: true },
+					payload: { elementId: existing.id, mediaId, replayed: true, fit: placedTakeFit(existing.element) },
 				});
 				return;
 			}
@@ -874,7 +920,7 @@ export function KartelVideoFinisherBridge({
 				(insertion.semanticRole === "keyframe" && created.type !== "image")
 			) throw new Error("The decoded repair candidate does not match its declared role.");
 			const targetDuration = insertion.endSeconds - insertion.startSeconds;
-			const element = buildElementFromMedia({
+			const built = buildElementFromMedia({
 				mediaId: created.id,
 				mediaType: created.type,
 				name: created.name,
@@ -884,6 +930,14 @@ export function KartelVideoFinisherBridge({
 					? new AudioBuffer({ length: 1, sampleRate: 44_100 })
 					: undefined,
 			});
+			// RS-073: a take made longer than its shot plays the window Studio chose, checked against
+			// the decoded length before the timeline is touched.
+			const geometry = insertion.fit
+				? repairTakeGeometry({ fit: insertion.fit, duration: built.duration, sourceDurationSeconds: Number(created.duration) })
+				: null;
+			const element = geometry
+				? { ...built, trimStart: geometry.trimStart, trimEnd: geometry.trimEnd, sourceDuration: geometry.sourceDuration, ...(geometry.retime ? { retime: geometry.retime } : {}) } as typeof built
+				: built;
 			applyingRef.current = true;
 			try {
 				editor.timeline.insertElement({
@@ -910,6 +964,7 @@ export function KartelVideoFinisherBridge({
 						startSeconds: insertion.startSeconds,
 						endSeconds: insertion.endSeconds,
 						replayed: false,
+						fit: insertion.fit && geometry ? { ...insertion.fit, playbackRate: geometry.playbackRate } : null,
 					},
 				});
 			} finally {
@@ -925,7 +980,38 @@ export function KartelVideoFinisherBridge({
 			post({
 				type: "REPLACEMENT_OBSERVED",
 				identity: message,
-				payload: { present: Boolean(existing), elementId: existing?.id ?? null, mediaId },
+				payload: { present: Boolean(existing), elementId: existing?.id ?? null, mediaId, fit: existing ? placedTakeFit(existing.element) : null },
+			});
+		};
+
+		// RS-073: a range of the exact source as its own silent MP4 (a motion reference or the clip an
+		// area edit works on). The source media stays untouched; the bytes go back to Studio, which
+		// stores them as an Asset Library version before any provider sees them.
+		const exportClip = async (message: VideoFinisherHostMessage) => {
+			const source = editor.media.getAssets().find((asset) => asset.id === sourceMediaIdRef.current);
+			if (!source?.file) throw new Error("The source video is not loaded in this editor.");
+			const range = normalizedClipRange({ value: message.payload, sourceDurationSeconds: Number(source.duration) });
+			if (!range) throw new Error("Studio asked for a clip outside the source or of the wrong length.");
+			// A reference model reads clips of at most about 720p, so the host may bound the short edge.
+			const size = clipOutputSize({ width: Number(source.width), height: Number(source.height), maxShortEdge: Number(message.payload?.maxShortEdge) });
+			const input = new Input({ source: new BlobSource(source.file), formats: ALL_FORMATS });
+			const output = new Output({ format: new Mp4OutputFormat({ fastStart: "in-memory" }), target: new BufferTarget() });
+			const conversion = await Conversion.init({
+				input,
+				output,
+				trim: { start: range.sourceStartSeconds, end: range.sourceEndSeconds },
+				video: size ? { codec: "avc", width: size.width, height: size.height, fit: "contain" } : { codec: "avc" },
+				audio: { discard: true },
+			});
+			if (!conversion.isValid) throw new Error("This browser cannot cut the source into an H.264 clip.");
+			await conversion.execute();
+			const buffer = output.target.buffer;
+			if (!buffer) throw new Error("The clip came back empty.");
+			const file = new File([buffer], `clip-${range.sourceStartSeconds.toFixed(2)}-${range.sourceEndSeconds.toFixed(2)}.mp4`, { type: "video/mp4", lastModified: Date.now() });
+			post({
+				type: "CLIP_EXPORTED",
+				identity: message,
+				payload: { file, mimeType: "video/mp4", byteSize: file.size, sourceStartSeconds: range.sourceStartSeconds, sourceEndSeconds: range.sourceEndSeconds, durationSeconds: range.sourceEndSeconds - range.sourceStartSeconds, width: size?.width ?? (Number(source.width) || null), height: size?.height ?? (Number(source.height) || null) },
 			});
 		};
 
@@ -1388,6 +1474,8 @@ export function KartelVideoFinisherBridge({
 																? applyEdits(message)
 																: message.type === "UNDO_EDITS"
 																	? undoEdits(message)
+																	: message.type === "EXPORT_CLIP"
+																		? exportClip(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -1408,6 +1496,8 @@ export function KartelVideoFinisherBridge({
 													? "SELECT_FAILED"
 													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS"].includes(message.type)
 														? "EDITS_FAILED"
+														: message.type === "EXPORT_CLIP"
+															? "CLIP_FAILED"
 											: "EXPORT_FAILED",
 					identity: message,
 					payload: {
@@ -1465,6 +1555,7 @@ export function KartelVideoFinisherBridge({
 		post({
 			type: "EDITOR_READY",
 			identity: { nonce: bridgeNonce, projectId, revision: 0, operationId: "editor-ready" },
+			payload: { capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES] },
 		});
 		const unsubscribers = [
 			editor.timeline.subscribe(changed),

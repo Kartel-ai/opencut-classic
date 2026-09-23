@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { VIDEO_FINISHER_EDITOR_CAPABILITIES } from "../video-finisher-take-fit.ts";
 import ts from "typescript";
 import { SaveManager } from "../../core/managers/save-manager.ts";
 import { createProjectLoadQueue, projectMediaForHost, requireProjectMedia } from "../video-finisher-media.ts";
@@ -107,7 +108,7 @@ test("restoring a saved replacement-only timeline never reinserts the original",
   const code = ts.transpileModule(body + "\nexports.load=load;", { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const scene = { tracks: tracks([{ type: "video", mediaId: "replacement" }]) };
   let inserted = 0;
-  const box = { exports: {}, OPEN_CUT_COMMIT: "test", projectId: "p", normalizedProjectDocument: () => ({ scenes: [scene] }),
+  const box = { exports: {}, VIDEO_FINISHER_EDITOR_CAPABILITIES, OPEN_CUT_COMMIT: "test", projectId: "p", normalizedProjectDocument: () => ({ scenes: [scene] }),
     applyingRef: { current: false }, storageService: { saveProject: async () => {} }, ensureSource: async () => ({ id: "original", name: "source", type: "video", duration: 15 }),
     sourceMediaIdRef: {}, identityRef: {}, post() {}, sourceLayout: () => [], requireProjectMedia() {},
     mediaTimeToSeconds: ({ time }) => time, toElementDurationTicks: ({ seconds }) => seconds, ZERO_MEDIA_TIME: 0, buildElementFromMedia: (value) => value,
