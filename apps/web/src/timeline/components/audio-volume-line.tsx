@@ -9,6 +9,7 @@ import {
 } from "@/timeline/audio-display";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "@/timeline/audio-constants";
 import { getElementVolume, hasAnimatedVolume } from "@/timeline/audio-state";
+import { resolveNumberAtTime } from "@/animation/values";
 import type { AudioElement } from "@/timeline/types";
 import {
 	clamp,
@@ -224,7 +225,23 @@ export function AudioVolumeLine({
 	}, [finishDrag]);
 
 	if (hasAnimatedEnvelope) {
-		return null;
+		// RS-067 mock: draw the keyframed level so a duck under the voice reads on the clip.
+		const count = 160;
+		const durationTicks = element.duration;
+		const points = Array.from({ length: count + 1 }, (_, index) => {
+			const db = resolveNumberAtTime({
+				baseValue: getElementVolume({ element }),
+				animations: element.animations,
+				propertyPath: "volume",
+				localTime: Math.round((index / count) * durationTicks),
+			});
+			return `${((index / count) * 100).toFixed(2)},${getLinePosFromDb({ db }).toFixed(2)}`;
+		}).join(" ");
+		return (
+			<svg className="pointer-events-none absolute inset-0 size-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" data-kartel-level="animated">
+				<polyline points={points} fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+			</svg>
+		);
 	}
 
 	return (

@@ -90,6 +90,11 @@ export class CommandManager {
 		});
 	}
 
+	// The command an undo would reverse next (Kartel's Video Finisher checks its own edit is still it).
+	latestCommand(): Command | null {
+		return this.history.at(-1)?.command ?? null;
+	}
+
 	canUndo(): boolean {
 		return this.history.length > 0;
 	}

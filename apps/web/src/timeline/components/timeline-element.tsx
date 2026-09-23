@@ -83,6 +83,7 @@ import { cn } from "@/utils/ui";
 import { usePropertiesStore } from "@/components/editor/panels/properties/stores/properties-store";
 import { getTrackTypeForElementType } from "@/timeline/placement/compatibility";
 import { useTimelineStore } from "@/timeline/timeline-store";
+import { useKartelLayout } from "@/kartel/video-finisher-layout";
 import { KEYFRAME_LANE_HEIGHT_PX } from "./layout";
 import {
 	getExpandedRows,
@@ -1010,7 +1011,8 @@ function AudioElementContent({
 		element.sourceType === "upload"
 			? buildWaveformSourceKey({ kind: "media", id: element.mediaId })
 			: buildWaveformSourceKey({ kind: "library", id: element.sourceUrl });
-	const mediaLabel = mediaAsset?.name ?? element.name;
+	const kartelCompact = useKartelLayout((state) => state.compact);
+	const mediaLabel = kartelCompact ? element.name.replace(/ \((?:left|right)\)$/, "") : (mediaAsset?.name ?? element.name);
 	const gainSamples = useMemo(
 		() =>
 			buildWaveformGainSamples({
@@ -1094,6 +1096,7 @@ function TiledMediaContent({
 	const mediaAssets = useEditor((e) => e.media.getAssets());
 
 	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
+	const kartelCompact = useKartelLayout((state) => state.compact);
 	const imageUrl =
 		element.type === "video"
 			? mediaAsset?.thumbnailUrl
@@ -1124,7 +1127,7 @@ function TiledMediaContent({
 				}}
 			/>
 			<MediaElementHeader
-				name={mediaAsset?.name}
+				name={kartelCompact ? (String(element.mediaId).startsWith("kartel-repair-") ? "New take" : element.name.replace(/ \((?:left|right)\)$/, "")) : mediaAsset?.name}
 				leading={
 					hasElementEffects({ element }) ? (
 						<EffectsButton element={element} track={track} />

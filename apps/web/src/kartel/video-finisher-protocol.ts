@@ -26,6 +26,10 @@ export const VIDEO_FINISHER_HOST_MESSAGE_TYPES = [
 	"SET_MARKERS",
 	"APPLY_BREAKDOWN",
 	"SELECT_RANGE",
+	// RS-067 mock: the Advanced switch, and the agent's free timeline edits with one undo.
+	"SET_LAYOUT",
+	"APPLY_EDITS",
+	"UNDO_EDITS",
 ] as const;
 
 export type VideoFinisherHostMessage = {

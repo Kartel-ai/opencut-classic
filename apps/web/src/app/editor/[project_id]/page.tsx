@@ -17,7 +17,9 @@ import { MigrationDialog } from "@/project/components/migration-dialog";
 import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
 import { MobileGate } from "@/components/editor/mobile-gate";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ImperativePanelHandle } from "react-resizable-panels";
+import { getTrackHeight } from "@/timeline/components/track-layout";
 import { useEditor } from "@/editor/use-editor";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -35,6 +37,7 @@ import {
 	getBookmarkPreviewOverlaySource,
 } from "@/timeline/bookmarks/index";
 import { KartelVideoFinisherBridge } from "@/kartel/video-finisher-bridge";
+import { useKartelLayout } from "@/kartel/video-finisher-layout";
 import {
 	isKartelVideoFinisherRoute,
 	shouldShowEditorMobileGate,
@@ -96,9 +99,22 @@ function DegradedRendererBanner() {
 function EditorLayout() {
 	usePasteMedia();
 	const { panels, setPanel } = usePanelStore();
+	// RS-067 mock: inside Studio the editor is the preview and the timeline; the host's Advanced
+	// switch brings OpenCut's assets and properties panels back.
+	const kartelCompact = useKartelLayout((state) => state.compact);
 	const activeScene = useEditor((editor) =>
 		editor.scenes.getActiveSceneOrNull(),
 	);
+	// RS-067 mock: the compact embed sizes the timeline to its lanes (toolbar, ruler and each lane),
+	// between 26% and 62% of the frame, and the preview takes the rest; it resizes as lanes arrive.
+	const kartelTimelineRef = useRef<ImperativePanelHandle>(null);
+	const kartelLanePixels = activeScene
+		? [...activeScene.tracks.overlay, activeScene.tracks.main, ...activeScene.tracks.audio].reduce((sum, track) => sum + getTrackHeight({ type: track.type }) + 6, 0)
+		: 71;
+	const kartelTimelineShare = typeof window === "undefined" ? 36 : Math.min(62, Math.max(26, ((132 + kartelLanePixels) / window.innerHeight) * 100));
+	useEffect(() => {
+		if (kartelCompact) kartelTimelineRef.current?.resize(kartelTimelineShare);
+	}, [kartelCompact, kartelTimelineShare]);
 	const currentTime = useEditor((editor) => editor.playback.getCurrentTime());
 	const activeGuide = usePreviewStore((state) => state.activeGuide);
 	const overlays = usePreviewStore((state) => state.overlays);
@@ -156,11 +172,20 @@ function EditorLayout() {
 			}}
 		>
 			<ResizablePanel
-				defaultSize={panels.mainContent}
+				defaultSize={kartelCompact ? 100 - kartelTimelineShare : panels.mainContent}
 				minSize={30}
 				maxSize={85}
 				className="min-h-0"
 			>
+				{kartelCompact ? (
+					<div className="size-full min-h-0 min-w-0 px-3 pt-3">
+						<PreviewPanel
+							overlayControls={overlayControls}
+							overlayInstances={overlaySource.instances}
+							onOverlayVisibilityChange={setOverlayVisibility}
+						/>
+					</div>
+				) : (
 				<ResizablePanelGroup
 					direction="horizontal"
 					className="size-full gap-[0.19rem] px-3"
@@ -207,12 +232,14 @@ function EditorLayout() {
 						<PropertiesPanel />
 					</ResizablePanel>
 				</ResizablePanelGroup>
+				)}
 			</ResizablePanel>
 
 			<ResizableHandle withHandle />
 
 			<ResizablePanel
-				defaultSize={panels.timeline}
+				ref={kartelTimelineRef}
+				defaultSize={kartelCompact ? kartelTimelineShare : panels.timeline}
 				minSize={15}
 				maxSize={70}
 				className="min-h-0 px-3 pb-3"

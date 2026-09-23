@@ -31,6 +31,8 @@ export type TrackType = "video" | "text" | "audio" | "graphic" | "effect";
 interface BaseTrack {
 	id: string;
 	name: string;
+	// Keep Solo's original mix with the project so reload and Undo restore it exactly.
+	kartelSolo?: { originalMuted: boolean; selected: boolean };
 }
 
 export interface VideoTrack extends BaseTrack {

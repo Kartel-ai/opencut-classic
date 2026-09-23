@@ -39,6 +39,9 @@ import {
 } from "./video-finisher-protocol";
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 import { createProjectLoadQueue, projectMediaForHost, requireProjectMedia } from "./video-finisher-media";
+import { useKartelLayout } from "./video-finisher-layout";
+import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
+import type { Command } from "@/commands/base-command";
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
@@ -319,16 +322,21 @@ export function videoFinisherSourceLayout({ tracks, sourceMediaId }: { tracks: r
 	};
 }
 
+// A separated layer is as long as the source's audio (Demucs returns every input sample), which can
+// land a fraction of a millisecond short of the piece's range after media-time rounding. That
+// rounding is tolerated; a layer that is really shorter than the piece is still refused.
+const STEM_ROUNDING_SECONDS = 0.001;
+
 export function breakdownStemGeometry({ piece, stemDurationSeconds }: { piece: TimelineElement; stemDurationSeconds: number }) {
 	const range = breakdownSourceRange(piece);
-	if (piece.type !== "video" || !Number.isFinite(stemDurationSeconds) || stemDurationSeconds < range.endSeconds) {
+	if (piece.type !== "video" || !Number.isFinite(stemDurationSeconds) || stemDurationSeconds + STEM_ROUNDING_SECONDS < range.endSeconds) {
 		throw new Error("The separated layer does not cover the exact source range. Original audio is unchanged.");
 	}
 	return {
 		startTime: piece.startTime,
 		duration: piece.duration,
 		trimStart: piece.trimStart,
-		trimEnd: mediaTimeFromSeconds({ seconds: stemDurationSeconds - range.endSeconds }),
+		trimEnd: mediaTimeFromSeconds({ seconds: Math.max(0, stemDurationSeconds - range.endSeconds) }),
 		sourceDuration: mediaTimeFromSeconds({ seconds: stemDurationSeconds }),
 		retime: piece.retime,
 	};
@@ -1095,7 +1103,8 @@ export function KartelVideoFinisherBridge({
 				if (renames.length) editor.timeline.updateElements({ updates: renames });
 
 				const stems: { role: string; elementId: string; trackId: string; replayed: boolean }[] = [];
-				for (const stem of breakdown.stems) {
+				// RS-067 mock: seat the background first so the voice lane lands directly under the video.
+				for (const stem of [...breakdown.stems].reverse()) {
 					const mediaId = stemMediaId(stem);
 					const processed = decodedStems.get(mediaId);
 					if (!processed) throw new Error("The decoded audio pair is incomplete.");
@@ -1297,6 +1306,49 @@ export function KartelVideoFinisherBridge({
 				payload: { released },
 			});
 		};
+		// RS-067: the host's Advanced switch between the compact embed and OpenCut's full panels.
+		const setLayout = async (message: VideoFinisherHostMessage) => {
+			const layout = isRecord(message.payload) ? message.payload.layout : undefined;
+			if (layout !== "compact" && layout !== "full") throw new Error("Unknown editor layout.");
+			useKartelLayout.getState().setCompact(layout === "compact");
+			post({ type: "LAYOUT_SET", identity: message, payload: { layout } });
+		};
+
+		// RS-067: the seat's free timeline edits. The list runs as one OpenCut snapshot command; the
+		// token names that command so the reply's Undo reverses exactly it, and only while it is
+		// still the latest step (OpenCut's own undo reverses the same step).
+		const editCommands = new Map<string, Command>();
+		const attemptedEdits = new Set<string>();
+		const applyEdits = async (message: VideoFinisherHostMessage) => {
+			const edits = normalizedTimelineEdits(isRecord(message.payload) ? message.payload.edits : undefined);
+			if (!edits) throw new Error("Studio sent an invalid edit list.");
+			if (attemptedEdits.has(message.operationId)) throw new Error("This edit was already attempted. Check the timeline before making another change.");
+			attemptedEdits.add(message.operationId);
+			applyingRef.current = true;
+			let result: ReturnType<typeof applyKartelTimelineEdits>;
+			try {
+				result = applyKartelTimelineEdits({ editor, edits });
+			} finally {
+				applyingRef.current = false;
+			}
+			editCommands.set(message.operationId, result.command);
+			await editor.save.flush();
+			post({ type: "EDITS_APPLIED", identity: message, payload: { token: message.operationId, applied: result.applied, sourceLayout: sourceLayout() } });
+			changed();
+		};
+		const undoEdits = async (message: VideoFinisherHostMessage) => {
+			const token = isRecord(message.payload) && typeof message.payload.token === "string" ? message.payload.token : "";
+			const command = editCommands.get(token);
+			if (!command) throw new Error("That change can no longer be undone here.");
+			if (editor.command.latestCommand() !== command) throw new Error("Later changes sit on top of this one. Undo those first on the timeline.");
+			applyingRef.current = true;
+			try { editor.command.undo(); } finally { applyingRef.current = false; }
+			editCommands.delete(token);
+			await editor.save.flush();
+			post({ type: "EDITS_APPLIED", identity: message, payload: { token, undone: true, sourceLayout: sourceLayout() } });
+			changed();
+		};
+
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== window.parent || event.origin !== hostOrigin) return;
 			if (!isHostMessage(event.data)) return;
@@ -1330,6 +1382,12 @@ export function KartelVideoFinisherBridge({
 													? applyBreakdown(message)
 													: message.type === "SELECT_RANGE"
 														? selectRange(message)
+														: message.type === "SET_LAYOUT"
+															? setLayout(message)
+															: message.type === "APPLY_EDITS"
+																? applyEdits(message)
+																: message.type === "UNDO_EDITS"
+																	? undoEdits(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -1348,6 +1406,8 @@ export function KartelVideoFinisherBridge({
 												? "BREAKDOWN_FAILED"
 												: message.type === "SELECT_RANGE"
 													? "SELECT_FAILED"
+													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS"].includes(message.type)
+														? "EDITS_FAILED"
 											: "EXPORT_FAILED",
 					identity: message,
 					payload: {

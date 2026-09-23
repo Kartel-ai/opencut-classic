@@ -21,6 +21,11 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useTimelineZoom } from "@/timeline/hooks/use-timeline-zoom";
+import { useKartelLayout } from "@/kartel/video-finisher-layout";
+import { kartelSoloTrackId, kartelSoloTracks } from "@/kartel/video-finisher-solo";
+import { TracksSnapshotCommand } from "@/commands/timeline";
+import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
+import { mediaTimeToSeconds } from "@/wasm";
 import {
 	useCallback,
 	useEffect,
@@ -183,6 +188,16 @@ export function Timeline() {
 			tracksScrollRef,
 			rulerScrollRef,
 		});
+	// RS-067 mock: a finishing cut is short, so the Studio embed shows all of it at once.
+	const kartelCompact = useKartelLayout((state) => state.compact);
+	const fittedSecondsRef = useRef(0);
+	useEffect(() => {
+		if (!kartelCompact || !tracksContainerWidth || !timelineDuration) return;
+		const seconds = mediaTimeToSeconds({ time: timelineDuration });
+		if (!(seconds > 0) || Math.abs(fittedSecondsRef.current - seconds) < 0.01) return;
+		fittedSecondsRef.current = seconds;
+		setZoomLevel(Math.max(minZoomLevel, (tracksContainerWidth - 24) / (seconds * BASE_TIMELINE_PIXELS_PER_SECOND)));
+	}, [kartelCompact, tracksContainerWidth, timelineDuration, minZoomLevel, setZoomLevel]);
 	const { isResizing, handleResizeStart } = useTimelineResize({
 		zoomLevel,
 		onSnapPointChange: handleSnapPointChange,
@@ -619,6 +634,14 @@ function TrackLabelsPanel({
 				: [],
 		[scene],
 	);
+	const kartelCompact = useKartelLayout((state) => state.compact);
+	const soloTrackId = kartelSoloTrackId(tracks);
+	// One command keeps the prior mix and Solo identity together through undo and reload.
+	const toggleSolo = (trackId: string) => {
+		if (!scene) return;
+		const before = scene.tracks;
+		editor.command.execute({ command: new TracksSnapshotCommand({ before, after: kartelSoloTracks({ tracks: before, trackId }) }) });
+	};
 	const { selectedElements } = useElementSelection();
 	const tracksWithSelection = useMemo(
 		() => new Set(selectedElements.map((el) => el.trackId)),
@@ -666,6 +689,40 @@ function TrackLabelsPanel({
 											height: `${baseHeight + getTrackExpansionHeight(index)}px`,
 										}}
 									>
+										{kartelCompact ? (
+										<div
+											className="flex shrink-0 items-center gap-1.5 pl-3 pr-2"
+											style={{ height: `${baseHeight}px` }}
+											data-kartel-lane={kartelLaneName({ track, mainTrackId: scene?.tracks.main.id ?? "" })}
+										>
+											<span className="text-foreground/85 min-w-0 flex-1 truncate text-xs font-medium">
+												{kartelLaneName({ track, mainTrackId: scene?.tracks.main.id ?? "" })}
+											</span>
+											{canTrackHaveAudio(track) && (
+												<>
+													<button
+														type="button"
+														aria-pressed={Boolean(track.muted) && soloTrackId === null}
+														aria-label={`Mute ${kartelLaneName({ track, mainTrackId: scene?.tracks.main.id ?? "" })}`}
+														disabled={soloTrackId !== null}
+														className={`grid size-5 place-items-center rounded-[4px] text-[10px] font-semibold ${track.muted && soloTrackId === null ? "bg-destructive/80 text-white" : "text-muted-foreground hover:bg-accent"}`}
+														onClick={() => editor.timeline.toggleTrackMute({ trackId: track.id })}
+													>
+														M
+													</button>
+													<button
+														type="button"
+														aria-pressed={soloTrackId === track.id}
+														aria-label={`Solo ${kartelLaneName({ track, mainTrackId: scene?.tracks.main.id ?? "" })}`}
+														className={`grid size-5 place-items-center rounded-[4px] text-[10px] font-semibold ${soloTrackId === track.id ? "bg-amber-400 text-black" : "text-muted-foreground hover:bg-accent"}`}
+														onClick={() => toggleSolo(track.id)}
+													>
+														S
+													</button>
+												</>
+											)}
+										</div>
+										) : (
 										<div
 											className="flex shrink-0 items-center justify-end gap-2 px-3"
 											style={{ height: `${baseHeight}px` }}
@@ -700,6 +757,7 @@ function TrackLabelsPanel({
 											)}
 											<TrackIcon track={track} />
 										</div>
+										)}
 										{expandedRows.length > 0 && (
 											<PropertyTree rows={expandedRows} />
 										)}
@@ -901,6 +959,16 @@ function TimelineGutter({
 
 function TrackIcon({ track }: { track: TimelineTrack }) {
 	return <>{TRACK_ICONS[track.type]}</>;
+}
+
+// RS-067 mock: the Studio embed names its lanes by what they carry.
+function kartelLaneName({ track, mainTrackId }: { track: TimelineTrack; mainTrackId: string }): string {
+	if (track.id === mainTrackId) return "Video";
+	const media = track.elements.map((element) => ("mediaId" in element ? String(element.mediaId) : "")).find(Boolean) ?? "";
+	if (media.startsWith("kartel-stem-dialogue")) return "Voice";
+	if (media.startsWith("kartel-stem-background")) return "Music & effects";
+	if (media.startsWith("kartel-repair-")) return "New take";
+	return track.type === "audio" ? "Audio" : track.type === "video" ? "Video" : "Lane";
 }
 
 function TrackToggleIcon({

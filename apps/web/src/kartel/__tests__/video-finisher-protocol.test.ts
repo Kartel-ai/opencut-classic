@@ -314,6 +314,8 @@ describe("breakdown source and timeline coordinates", () => {
 		expect(mediaTimeToSeconds({ time: geometry.trimEnd })).toBe(16);
 		expect(geometry.retime).toEqual({ rate: 2 });
 		expect(() => breakdownStemGeometry({ piece, stemDurationSeconds: 13.99 })).toThrow("does not cover");
+		// A layer exactly as long as the audio survives sub-millisecond media-time rounding.
+		expect(mediaTimeToSeconds({ time: breakdownStemGeometry({ piece, stemDurationSeconds: 13.9995 }).trimEnd })).toBe(0);
 		expect(() => breakdownStemGeometry({ piece, stemDurationSeconds: Number.NaN })).toThrow("does not cover");
 	});
 });

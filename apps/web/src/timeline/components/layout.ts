@@ -13,7 +13,8 @@ export const KEYFRAME_DIAMOND_SIZE_PX = 14;
 export const EXPANDED_GROUP_HEADER_HEIGHT_PX = 18;
 
 export const TIMELINE_TRACK_GAP_PX = 6;
-export const TIMELINE_TRACK_LABELS_COLUMN_WIDTH_PX = 112;
+// RS-067 mock: wide enough for a lane name beside its mute and solo controls.
+export const TIMELINE_TRACK_LABELS_COLUMN_WIDTH_PX = 176;
 export const TIMELINE_RULER_HEIGHT_PX = 22;
 export const TIMELINE_BOOKMARK_ROW_HEIGHT_PX = 16;
 export const TIMELINE_SCROLLBAR_SIZE_PX = 12;
