@@ -1,5 +1,6 @@
 import type { DragEvent } from "react";
 import { processMediaAssets } from "@/media/processing";
+import { isKartelEmbedded } from "@/kartel/video-finisher-layout";
 import { showMediaUploadToast } from "@/media/upload-toast";
 import {
 	DEFAULT_NEW_ELEMENT_DURATION,
@@ -247,7 +248,8 @@ export class DragDropController {
 		this.enterCount = 0;
 
 		const dragData = this.config.dragSource.getActive();
-		const hasFiles = event.dataTransfer.files?.length > 0;
+		// Inside Studio media enters through the Asset Library, never a dropped file.
+		const hasFiles = event.dataTransfer.files?.length > 0 && !isKartelEmbedded();
 		if (!dragData && !hasFiles) return;
 
 		const currentTarget = this.dropTarget;

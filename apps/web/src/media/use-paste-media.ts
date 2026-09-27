@@ -9,6 +9,7 @@ import { BatchCommand } from "@/commands";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds } from "@/wasm";
 import { isTypableDOMElement } from "@/utils/browser";
+import { isKartelEmbedded } from "@/kartel/video-finisher-layout";
 import type { MediaType } from "@/media/types";
 
 const MEDIA_MIME_PREFIXES: MediaType[] = ["image", "video", "audio"];
@@ -56,6 +57,8 @@ export function usePasteMedia() {
 			}
 
 			event.preventDefault();
+			// Inside Studio media enters through the Asset Library, never the clipboard.
+			if (isKartelEmbedded()) return;
 
 			const activeProject = editor.project.getActive();
 			if (!activeProject) return;

@@ -21,9 +21,17 @@ import { toElementDurationTicks } from "@/timeline/creation";
 import { updateSceneInArray } from "@/timeline/scenes";
 import type {
 	Bookmark,
+	SceneTracks,
 	TimelineElement,
 	TimelineTrack,
 } from "@/timeline/types";
+import {
+	DeleteElementsCommand,
+	InsertElementCommand,
+	SplitElementsCommand,
+	TracksSnapshotCommand,
+	UpdateElementsCommand,
+} from "@/commands/timeline";
 import {
 	addMediaTime,
 	mediaTimeFromSeconds,
@@ -51,7 +59,34 @@ import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 import { createProjectLoadQueue, projectMediaForHost, requireProjectMedia } from "./video-finisher-media";
 import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
-import type { Command } from "@/commands/base-command";
+import type { Command, CommandResult } from "@/commands/base-command";
+import { canJoinPieces, joinedPiece } from "./video-finisher-join";
+
+// DF-049b: one breakdown apply (a split or merge with its names and layers) as one history step.
+// Whichever undo reverses it, Studio's Undo through UNDO_EDITS or OpenCut's own Ctrl+Z inside the
+// frame, tells Studio, so the room's shots follow the timeline.
+type BreakdownHistoryEvent = { type: "BREAKDOWN_UNDONE" | "BREAKDOWN_REDONE"; token: string; command: Command };
+class KartelBreakdownCommand extends TracksSnapshotCommand {
+	private readonly token: string;
+	private readonly notify: (event: BreakdownHistoryEvent) => void;
+
+	constructor({ before, after, token, notify }: { before: SceneTracks; after: SceneTracks; token: string; notify: (event: BreakdownHistoryEvent) => void }) {
+		super({ before, after });
+		this.token = token;
+		this.notify = notify;
+	}
+
+	undo(): void {
+		super.undo();
+		this.notify({ type: "BREAKDOWN_UNDONE", token: this.token, command: this });
+	}
+
+	redo(): CommandResult | undefined {
+		const result = super.redo();
+		this.notify({ type: "BREAKDOWN_REDONE", token: this.token, command: this });
+		return result;
+	}
+}
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 const OPEN_CUT_COMMIT = /^[0-9a-f]{40}$/.test(
@@ -1154,19 +1189,69 @@ export function KartelVideoFinisherBridge({
 				decodedStems.set(stemMediaId(stem), processed);
 			}
 			const startOf = (element: TimelineElement) => mediaTimeToSeconds({ time: element.startTime });
+			// DF-049b: the commands below run without history and the whole apply is recorded once,
+			// also when a later part fails, so one undo reverses exactly this apply.
+			const tracksNow = () => editor.scenes.getActiveScene().tracks;
+			const before = tracksNow();
+			let token: string | null = null;
+			const record = () => {
+				if (tracksNow() === before || editCommands.has(message.operationId)) return;
+				const command = new KartelBreakdownCommand({ before, after: tracksNow(), token: message.operationId, notify: breakdownHistory });
+				editor.command.push({ command });
+				editCommands.set(message.operationId, command);
+				token = message.operationId;
+			};
+			// DF-049a: the inverse of a split. The right piece goes first so the pieces never overlap.
+			const joinPair = ({ trackId, left, right }: { trackId: string; left: TimelineElement; right: TimelineElement }) => {
+				const joined = joinedPiece({ left, right });
+				const selectedRight = editor.selection.getSelectedElements().some((ref) => ref.elementId === right.id);
+				new DeleteElementsCommand({ elements: [{ trackId, elementId: right.id }] }).execute();
+				new UpdateElementsCommand({ updates: [{ trackId, elementId: left.id, patch: { duration: joined.duration, trimEnd: joined.trimEnd } as Partial<TimelineElement> }] }).execute();
+				if (selectedRight) editor.selection.setSelectedElements({ elements: [{ trackId, elementId: left.id }] });
+			};
 			applyingRef.current = true;
 			let splitCount = 0;
+			let joinCount = 0;
 			try {
 				for (const cut of breakdown.cuts) {
 					const track = mainTrack();
 					for (const target of track.elements.filter(isSourceElement)) {
 						const seconds = breakdownCutTimelineSeconds({ element: target, sourceSeconds: cut });
 						if (seconds === null) continue;
-						editor.timeline.splitElements({
+						new SplitElementsCommand({
 							elements: [{ trackId: track.id, elementId: target.id }],
 							splitTime: mediaTimeFromSeconds({ seconds }),
-						});
+						}).execute();
 						splitCount += 1;
+					}
+				}
+				// DF-049a: a merged shot is one clip again. Touching source pieces inside one shot with
+				// no cut asked for between them join back into one, and so do the separated layers cut
+				// to exactly those pieces.
+				const shotAt = (sourceSeconds: number) =>
+					breakdown.shots.find((shot) => sourceSeconds >= shot.startSeconds - 0.011 && sourceSeconds < shot.endSeconds - 0.011)?.id ?? null;
+				const joins: { left: TimelineElement; right: TimelineElement }[] = [];
+				for (;;) {
+					const ordered = mainTrack().elements.filter(isSourceElement).sort((a, b) => startOf(a) - startOf(b));
+					const at = ordered.findIndex((left, index) => {
+						const right = ordered[index + 1];
+						if (!right || !canJoinPieces({ left, right })) return false;
+						const boundary = breakdownSourceRange(right).startSeconds;
+						const shot = shotAt(breakdownSourceRange(left).startSeconds);
+						return shot !== null && shot === shotAt(boundary) && !breakdown.cuts.some((cut) => Math.abs(cut - boundary) < 0.011);
+					});
+					if (at < 0) break;
+					joins.push({ left: ordered[at], right: ordered[at + 1] });
+					joinPair({ trackId: mainTrack().id, left: ordered[at], right: ordered[at + 1] });
+					joinCount += 1;
+				}
+				for (const { left, right } of joins) {
+					for (const audioTrack of tracksNow().audio) {
+						for (const layer of audioTrack.elements) {
+							if (!("mediaId" in layer) || !layer.mediaId.startsWith("kartel-stem-") || layer.startTime !== left.startTime || layer.duration !== left.duration) continue;
+							const partner = audioTrack.elements.find((other) => other.id !== layer.id && "mediaId" in other && other.mediaId === layer.mediaId && other.startTime === right.startTime && other.duration === right.duration);
+							if (partner && canJoinPieces({ left: layer, right: partner })) joinPair({ trackId: audioTrack.id, left: layer, right: partner });
+						}
 					}
 				}
 				const track = mainTrack();
@@ -1186,7 +1271,7 @@ export function KartelVideoFinisherBridge({
 					if (!shot || piece.name === shot.label) return [];
 					return [{ trackId: track.id, elementId: piece.id, patch: { name: shot.label } as Partial<TimelineElement> }];
 				});
-				if (renames.length) editor.timeline.updateElements({ updates: renames });
+				if (renames.length) editor.timeline.updateElements({ updates: renames, pushHistory: false });
 
 				const stems: { role: string; elementId: string; trackId: string; replayed: boolean }[] = [];
 				// RS-067 mock: seat the background first so the voice lane lands directly under the video.
@@ -1206,10 +1291,10 @@ export function KartelVideoFinisherBridge({
 						}
 						const element = buildElementFromMedia({ mediaId, mediaType: "audio", name: stem.label, duration: piece.duration, startTime: piece.startTime });
 						if (element.type !== "audio") throw new Error("The separated layer is not audio.");
-						editor.timeline.insertElement({
+						new InsertElementCommand({
 							element: { ...element, ...breakdownStemGeometry({ piece, stemDurationSeconds: created.duration ?? 0 }), params: { ...element.params, muted: true } },
 							placement: { mode: "auto", trackType: "audio" },
-						});
+						}).execute();
 						const inserted = findBreakdownStemElement({ tracks: editor.scenes.getActiveScene().tracks.audio, mediaId, piece });
 						if (!inserted || inserted.mutedTrack) throw new Error(`OpenCut could not confirm the ${stem.label.toLowerCase()} layer. New pieces remain muted.`);
 						stems.push({ role: stem.role, elementId: inserted.id, trackId: inserted.trackId, replayed: false });
@@ -1227,8 +1312,9 @@ export function KartelVideoFinisherBridge({
 						if (element.params.muted === muted) return [];
 						return [{ trackId: audioTrack.id, elementId: element.id, patch: { params: { ...element.params, muted } } as Partial<TimelineElement> }];
 					}));
-					if (updates.length) editor.timeline.updateElements({ updates });
+					if (updates.length) editor.timeline.updateElements({ updates, pushHistory: false });
 				}
+				record();
 				await editor.save.flush();
 				identityRef.current = message;
 				post({
@@ -1238,14 +1324,25 @@ export function KartelVideoFinisherBridge({
 						shots,
 						stems,
 						splitCount,
+						joinCount,
 						pieceCount: pieces.length,
 						sourceLayout: sourceLayout(),
-						replayed: splitCount === 0 && stems.every((stem) => stem.replayed),
+						replayed: splitCount === 0 && joinCount === 0 && stems.every((stem) => stem.replayed),
+						// DF-049b: the step Studio's Undo names (UNDO_EDITS); absent when nothing changed.
+						...(token ? { token } : {}),
 					},
 				});
+			} catch (error) {
+				record();
+				throw error;
 			} finally {
 				applyingRef.current = false;
 			}
+		};
+		const breakdownHistory = ({ type, token, command }: BreakdownHistoryEvent) => {
+			if (type === "BREAKDOWN_REDONE") editCommands.set(token, command);
+			if (!identityRef.current) return;
+			post({ type, identity: identityRef.current, payload: { token, sourceLayout: sourceLayout() } });
 		};
 
 		// Selection from the finishing rail: pick one clip (by id, or the main-track piece that starts

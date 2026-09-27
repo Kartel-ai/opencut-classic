@@ -29,6 +29,7 @@ import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds, type MediaTime } from "@/wasm";
 import { useEditor } from "@/editor/use-editor";
 import { useFileUpload } from "@/media/use-file-upload";
+import { useKartelLayout } from "@/kartel/video-finisher-layout";
 import { invokeAction } from "@/actions";
 import { processMediaAssets } from "@/media/processing";
 import { showMediaUploadToast } from "@/media/upload-toast";
@@ -183,6 +184,7 @@ export function MediaView() {
 
 		return filtered;
 	}, [mediaFiles, mediaSortBy, mediaSortOrder]);
+	const kartelEmbedded = useKartelLayout((state) => state.embedded);
 	const orderedMediaIds = useMemo(() => {
 		return filteredMediaItems.map((item) => item.id);
 	}, [filteredMediaItems]);
@@ -201,14 +203,14 @@ export function MediaView() {
 						sortBy={mediaSortBy}
 						sortOrder={mediaSortOrder}
 						onSort={handleSort}
-						onImport={openFilePicker}
+						onImport={kartelEmbedded ? undefined : openFilePicker}
 					/>
 				}
 				className={cn(isDragOver && "bg-accent/30")}
 				contentClassName="h-full"
-				{...dragProps}
+				{...(kartelEmbedded ? {} : dragProps)}
 			>
-				{isDragOver || filteredMediaItems.length === 0 ? (
+				{!kartelEmbedded && (isDragOver || filteredMediaItems.length === 0) ? (
 					<MediaDragOverlay
 						isVisible={true}
 						isProcessing={isProcessing}
@@ -520,7 +522,7 @@ function MediaActions({
 	sortBy: MediaSortKey;
 	sortOrder: MediaSortOrder;
 	onSort: ({ key }: { key: MediaSortKey }) => void;
-	onImport: () => void;
+	onImport?: () => void;
 }) {
 	return (
 		<div className="flex gap-1.5">
@@ -604,16 +606,18 @@ function MediaActions({
 					</TooltipContent>
 				</Tooltip>
 			</TooltipProvider>
-			<Button
-				variant="outline"
-				onClick={onImport}
-				disabled={isProcessing}
-				size="sm"
-				className="items-center justify-center gap-1.5"
-			>
-				<HugeiconsIcon icon={CloudUploadIcon} />
-				Import
-			</Button>
+			{onImport ? (
+				<Button
+					variant="outline"
+					onClick={onImport}
+					disabled={isProcessing}
+					size="sm"
+					className="items-center justify-center gap-1.5"
+				>
+					<HugeiconsIcon icon={CloudUploadIcon} />
+					Import
+				</Button>
+			) : null}
 		</div>
 	);
 }

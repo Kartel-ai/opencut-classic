@@ -84,6 +84,8 @@ import { usePropertiesStore } from "@/components/editor/panels/properties/stores
 import { getTrackTypeForElementType } from "@/timeline/placement/compatibility";
 import { useTimelineStore } from "@/timeline/timeline-store";
 import { useKartelLayout } from "@/kartel/video-finisher-layout";
+import { useKartelClipFrame } from "@/kartel/video-finisher-clip-thumbnail";
+import { kartelClipFrameSeconds } from "@/kartel/video-finisher-clip-frame";
 import { KEYFRAME_LANE_HEIGHT_PX } from "./layout";
 import {
 	getExpandedRows,
@@ -1011,8 +1013,8 @@ function AudioElementContent({
 		element.sourceType === "upload"
 			? buildWaveformSourceKey({ kind: "media", id: element.mediaId })
 			: buildWaveformSourceKey({ kind: "library", id: element.sourceUrl });
-	const kartelCompact = useKartelLayout((state) => state.compact);
-	const mediaLabel = kartelCompact ? element.name.replace(/ \((?:left|right)\)$/, "") : (mediaAsset?.name ?? element.name);
+	const kartelNames = useKartelLayout((state) => state.compact || state.embedded);
+	const mediaLabel = kartelNames ? element.name.replace(/ \((?:left|right)\)$/, "") : (mediaAsset?.name ?? element.name);
 	const gainSamples = useMemo(
 		() =>
 			buildWaveformGainSamples({
@@ -1096,10 +1098,19 @@ function TiledMediaContent({
 	const mediaAssets = useEditor((e) => e.media.getAssets());
 
 	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
-	const kartelCompact = useKartelLayout((state) => state.compact);
+	const kartelNames = useKartelLayout((state) => state.compact || state.embedded);
+	// DF-048: inside Studio each piece of a split source shows a frame from its own range.
+	const clipFrame = useKartelClipFrame({
+		asset: element.type === "video" && kartelNames ? mediaAsset : undefined,
+		seconds: kartelClipFrameSeconds({
+			trimStartSeconds: element.trimStart / TICKS_PER_SECOND,
+			durationSeconds: element.duration / TICKS_PER_SECOND,
+			rate: element.type === "video" ? (element.retime?.rate ?? 1) : 1,
+		}),
+	});
 	const imageUrl =
 		element.type === "video"
-			? mediaAsset?.thumbnailUrl
+			? (clipFrame ?? mediaAsset?.thumbnailUrl)
 			: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
 
 	if (!imageUrl) {
@@ -1127,7 +1138,7 @@ function TiledMediaContent({
 				}}
 			/>
 			<MediaElementHeader
-				name={kartelCompact ? (String(element.mediaId).startsWith("kartel-repair-") ? "New take" : element.name.replace(/ \((?:left|right)\)$/, "")) : mediaAsset?.name}
+				name={kartelNames ? (String(element.mediaId).startsWith("kartel-repair-") ? "New take" : element.name.replace(/ \((?:left|right)\)$/, "")) : mediaAsset?.name}
 				leading={
 					hasElementEffects({ element }) ? (
 						<EffectsButton element={element} track={track} />
