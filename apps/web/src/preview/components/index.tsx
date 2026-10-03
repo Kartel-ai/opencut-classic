@@ -7,6 +7,7 @@ import { useRafLoop } from "@/hooks/use-raf-loop";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { playbackPreviewSize } from "@/preview/resolution";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import { buildScene } from "@/services/renderer/scene-builder";
@@ -184,6 +185,20 @@ function PreviewCanvas({
 
 	const render = useCallback(() => {
 		if (!renderTree || renderingRef.current) return;
+		if (editor.project.getExportState().isExporting) {
+			lastFrameRef.current = -1;
+			return;
+		}
+		const sizeChanged = renderer.setPreviewSize(
+			playbackPreviewSize({
+				width: nativeWidth,
+				height: nativeHeight,
+				displayWidth: viewport.sceneWidth,
+				displayHeight: viewport.sceneHeight,
+				playing: editor.playback.getIsPlaying(),
+				pixelRatio: window.devicePixelRatio,
+			}),
+		);
 
 		const renderTime = Math.min(
 			editor.playback.getCurrentTime(),
@@ -195,6 +210,7 @@ function PreviewCanvas({
 		const frame = Math.floor(renderTime / ticksPerFrame);
 
 		if (
+			!sizeChanged &&
 			frame === lastFrameRef.current &&
 			renderTree === lastSceneRef.current
 		) {
@@ -206,10 +222,22 @@ function PreviewCanvas({
 		lastFrameRef.current = frame;
 		renderer
 			.render({ node: renderTree, time: renderTime })
-			.then(() => {
+			.catch((error) => {
+				console.error("Preview render failed:", error);
+				lastFrameRef.current = -1;
+			})
+			.finally(() => {
 				renderingRef.current = false;
 			});
-	}, [renderer, renderTree, editor.playback, editor.timeline]);
+	}, [
+		renderer,
+		renderTree,
+		editor,
+		nativeWidth,
+		nativeHeight,
+		viewport.sceneWidth,
+		viewport.sceneHeight,
+	]);
 
 	useRafLoop(render);
 
@@ -308,20 +336,20 @@ function PreviewCanvas({
 								ref={viewportRef}
 								className="relative flex size-full min-h-0 min-w-0 items-center justify-center overflow-hidden"
 							>
-							<div
-								ref={canvasMountRef}
-								className="absolute block border"
-								style={{
-									left: viewport.sceneLeft,
-									top: viewport.sceneTop,
-									width: viewport.sceneWidth,
-									height: viewport.sceneHeight,
-									background:
-										activeProject.settings.background.type === "blur"
-											? "transparent"
-											: activeProject?.settings.background.color,
-								}}
-							/>
+								<div
+									ref={canvasMountRef}
+									className="absolute block border"
+									style={{
+										left: viewport.sceneLeft,
+										top: viewport.sceneTop,
+										width: viewport.sceneWidth,
+										height: viewport.sceneHeight,
+										background:
+											activeProject.settings.background.type === "blur"
+												? "transparent"
+												: activeProject?.settings.background.color,
+									}}
+								/>
 								<PreviewOverlayLayer
 									instances={overlayInstances}
 									plane="under-interaction"

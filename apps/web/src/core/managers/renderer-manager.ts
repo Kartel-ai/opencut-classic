@@ -2,7 +2,10 @@ import type { EditorCore } from "@/core";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
-import { SceneExporter } from "@/services/renderer/scene-exporter";
+import {
+	SceneExporter,
+	preflightSceneExport,
+} from "@/services/renderer/scene-exporter";
 import { buildScene } from "@/services/renderer/scene-builder";
 import { createTimelineAudioBuffer } from "@/media/audio";
 import { formatTimecode } from "opencut-wasm";
@@ -169,6 +172,12 @@ export class RendererManager {
 
 			const exportFps = fps ?? activeProject.settings.fps;
 			const canvasSize = activeProject.settings.canvasSize;
+			await preflightSceneExport({
+				...canvasSize,
+				format,
+				quality,
+				requireAudioTrack,
+			});
 
 			let audioBuffer: AudioBuffer | null = null;
 			if (includeAudio) {
@@ -197,6 +206,7 @@ export class RendererManager {
 				quality,
 				shouldIncludeAudio: !!includeAudio,
 				audioBuffer: audioBuffer || undefined,
+				maxBytes: options.maxBytes,
 			});
 
 			exporter.on("progress", (progress) => {

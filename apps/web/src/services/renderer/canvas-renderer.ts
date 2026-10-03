@@ -1,6 +1,6 @@
 import type { FrameRate } from "opencut-wasm";
 import type { AnyBaseNode } from "./nodes/base-node";
-import { createCanvasSurface } from "./canvas-utils";
+import { scalePreviewFrame, supportsScaledPreview } from "@/preview/resolution";
 import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
 import { resolveRenderTree } from "./resolve";
@@ -16,27 +16,30 @@ export type CanvasRendererParams = {
 	fps: FrameRate;
 };
 
+// The WASM compositor owns one output canvas. Preview, snapshot and export must
+// never race while resolving frames or changing its dimensions/textures.
+let renderTail: Promise<unknown> = Promise.resolve();
+
 export class CanvasRenderer {
-	canvas: OffscreenCanvas;
-	context: OffscreenCanvasRenderingContext2D;
 	width: number;
 	height: number;
 	fps: FrameRate;
+	private previewSize: { width: number; height: number } | null = null;
+	previewDecodeSize: number | undefined;
 
 	constructor({ width, height, fps }: CanvasRendererParams) {
 		this.width = width;
 		this.height = height;
 		this.fps = fps;
-
-		const surface = createCanvasSurface({ width, height });
-		this.canvas = surface.canvas;
-		this.context = surface.context;
 	}
 
 	getOutputCanvas(): HTMLCanvasElement {
+		// Accessing the canvas must not resize pixels a different queued consumer
+		// is reading. Every render applies its size while holding the render lock.
 		wasmCompositor.ensureInitialized({
 			width: this.width,
 			height: this.height,
+			resize: false,
 		});
 		return wasmCompositor.getCanvas();
 	}
@@ -44,13 +47,52 @@ export class CanvasRenderer {
 	setSize({ width, height }: { width: number; height: number }) {
 		this.width = width;
 		this.height = height;
-
-		const surface = createCanvasSurface({ width, height });
-		this.canvas = surface.canvas;
-		this.context = surface.context;
 	}
 
-	async render({ node, time }: { node: AnyBaseNode; time: number }) {
+	setPreviewSize(size: { width: number; height: number }): boolean {
+		if (
+			this.previewSize?.width === size.width &&
+			this.previewSize?.height === size.height
+		)
+			return false;
+		this.previewSize = size;
+		return true;
+	}
+
+	async render({
+		node,
+		time,
+		onRendered,
+	}: {
+		node: AnyBaseNode;
+		time: number;
+		onRendered?: () => void | Promise<void>;
+	}) {
+		const current = renderTail.then(async () => {
+			await this.renderFrame({ node, time });
+			// CanvasSource.add and snapshots must read the shared canvas before the
+			// next renderer is allowed to resize or replace its pixels.
+			await onRendered?.();
+		});
+		renderTail = current.catch(() => {});
+		await current;
+	}
+
+	private async renderFrame({
+		node,
+		time,
+	}: {
+		node: AnyBaseNode;
+		time: number;
+	}) {
+		const size =
+			this.previewSize && supportsScaledPreview(node)
+				? this.previewSize
+				: { width: this.width, height: this.height };
+		this.previewDecodeSize =
+			size.width < this.width || size.height < this.height
+				? Math.max(size.width, size.height)
+				: undefined;
 		await measureSpanAsync({
 			name: "resolve",
 			fn: () => resolveRenderTree({ node, renderer: this, time }),
@@ -60,8 +102,8 @@ export class CanvasRenderer {
 			fn: () => buildFrameDescriptor({ node, renderer: this }),
 		});
 		wasmCompositor.ensureInitialized({
-			width: this.width,
-			height: this.height,
+			width: size.width,
+			height: size.height,
 		});
 		measureSpanSync({
 			name: "syncTextures",
@@ -69,8 +111,9 @@ export class CanvasRenderer {
 		});
 		measureSpanSync({
 			name: "renderFrame",
-			fn: () => wasmCompositor.render(frame),
+			fn: () => wasmCompositor.render(scalePreviewFrame({ frame, ...size })),
 		});
+		onRenderPerfFrameComplete();
 	}
 
 	async renderToCanvas({
@@ -82,24 +125,27 @@ export class CanvasRenderer {
 		time: number;
 		targetCanvas: HTMLCanvasElement;
 	}) {
-		await this.render({ node, time });
+		await this.render({
+			node,
+			time,
+			onRendered: () => {
+				const ctx = targetCanvas.getContext("2d");
+				if (!ctx) {
+					throw new Error("Failed to get target canvas context");
+				}
 
-		const ctx = targetCanvas.getContext("2d");
-		if (!ctx) {
-			throw new Error("Failed to get target canvas context");
-		}
-
-		measureSpanSync({
-			name: "drawImage",
-			fn: () =>
-				ctx.drawImage(
-					wasmCompositor.getCanvas(),
-					0,
-					0,
-					targetCanvas.width,
-					targetCanvas.height,
-				),
+				measureSpanSync({
+					name: "drawImage",
+					fn: () =>
+						ctx.drawImage(
+							wasmCompositor.getCanvas(),
+							0,
+							0,
+							targetCanvas.width,
+							targetCanvas.height,
+						),
+				});
+			},
 		});
-		onRenderPerfFrameComplete();
 	}
 }

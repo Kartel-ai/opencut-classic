@@ -19,6 +19,7 @@ export interface ExportOptions {
 	fps?: FrameRate;
 	includeAudio?: boolean;
 	requireAudioTrack?: boolean;
+	maxBytes?: number;
 }
 
 export interface ExportResult {

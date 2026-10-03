@@ -11,6 +11,8 @@ import {
 	QUALITY_MEDIUM,
 	QUALITY_HIGH,
 	QUALITY_VERY_HIGH,
+	canEncodeVideo,
+	canEncodeAudio,
 } from "mediabunny";
 import type { FrameRate } from "opencut-wasm";
 import { mediaTimeToSeconds } from "opencut-wasm";
@@ -19,6 +21,7 @@ import { frameRateToFloat } from "@/fps/utils";
 import type { RootNode } from "./nodes/root-node";
 import type { ExportFormat, ExportQuality } from "@/export";
 import { CanvasRenderer } from "./canvas-renderer";
+import { createExportByteBudget } from "@/export/byte-budget";
 
 type ExportParams = {
 	width: number;
@@ -28,6 +31,7 @@ type ExportParams = {
 	quality: ExportQuality;
 	shouldIncludeAudio?: boolean;
 	audioBuffer?: AudioBuffer;
+	maxBytes?: number;
 };
 
 const qualityMap = {
@@ -36,6 +40,45 @@ const qualityMap = {
 	high: QUALITY_HIGH,
 	very_high: QUALITY_VERY_HIGH,
 };
+
+// Fail unsupported mandatory codecs before decoding/mixing the entire timeline.
+export async function preflightSceneExport({
+	width,
+	height,
+	format,
+	quality,
+	requireAudioTrack,
+}: {
+	width: number;
+	height: number;
+	format: ExportFormat;
+	quality: ExportQuality;
+	requireAudioTrack?: boolean;
+}) {
+	if (
+		!(await canEncodeVideo(format === "mp4" ? "avc" : "vp9", {
+			width,
+			height,
+			bitrate: qualityMap[quality],
+		}))
+	) {
+		throw new Error(
+			"This browser cannot encode the requested video format and dimensions.",
+		);
+	}
+	if (
+		requireAudioTrack &&
+		!(await canEncodeAudio(format === "mp4" ? "aac" : "opus", {
+			sampleRate: 44100,
+			numberOfChannels: 2,
+			bitrate: qualityMap[quality],
+		}))
+	) {
+		throw new Error(
+			"This browser cannot encode the required audio track. The project remains saved.",
+		);
+	}
+}
 
 export type SceneExporterEvents = {
 	progress: [progress: number];
@@ -50,6 +93,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 	private quality: ExportQuality;
 	private shouldIncludeAudio: boolean;
 	private audioBuffer?: AudioBuffer;
+	private maxBytes?: number;
 	private videoCodec: "h264" | "vp9";
 	private audioCodec: "aac" | "opus" | null = null;
 
@@ -63,6 +107,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		quality,
 		shouldIncludeAudio,
 		audioBuffer,
+		maxBytes,
 	}: ExportParams) {
 		super();
 		this.renderer = new CanvasRenderer({
@@ -76,6 +121,7 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		this.quality = quality;
 		this.shouldIncludeAudio = shouldIncludeAudio ?? false;
 		this.audioBuffer = audioBuffer;
+		this.maxBytes = maxBytes;
 	}
 
 	cancel(): void {
@@ -97,14 +143,23 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 		const outputFormat =
 			this.format === "webm" ? new WebMOutputFormat() : new Mp4OutputFormat();
 
+		const budget = createExportByteBudget(this.maxBytes);
+		const target = new BufferTarget();
+		// Mediabunny owns this positional callback API.
+		// eslint-disable-next-line opencut/prefer-object-params
+		target.onwrite = (_start, end) => {
+			budget.writeThrough(end);
+			budget.check();
+		};
 		const output = new Output({
 			format: outputFormat,
-			target: new BufferTarget(),
+			target,
 		});
 
 		const videoSource = new CanvasSource(this.renderer.getOutputCanvas(), {
 			codec: this.format === "webm" ? "vp9" : "avc",
 			bitrate: qualityMap[this.quality],
+			onEncodedPacket: (packet) => budget.addPacket(packet.byteLength),
 		});
 
 		output.addVideoTrack(videoSource, { frameRate: fpsFloat });
@@ -127,50 +182,68 @@ export class SceneExporter extends EventEmitter<SceneExporterEvents> {
 			audioSource = new AudioBufferSource({
 				codec: audioCodec,
 				bitrate: qualityMap[this.quality],
+				onEncodedPacket: (packet) => budget.addPacket(packet.byteLength),
 			});
 			output.addAudioTrack(audioSource);
 		}
 
-		await output.start();
+		try {
+			await output.start();
 
-		if (audioSource && this.audioBuffer) {
-			await audioSource.add(this.audioBuffer);
-			audioSource.close();
-		}
+			if (audioSource && this.audioBuffer) {
+				await audioSource.add(this.audioBuffer);
+				audioSource.close();
+				budget.check();
+			}
 
-		for (let i = 0; i < frameCount; i++) {
+			for (let i = 0; i < frameCount; i++) {
+				if (this.isCancelled) {
+					await output.cancel();
+					this.emit("cancelled");
+					return null;
+				}
+
+				const timeTicks = i * ticksPerFrame;
+				const timeSeconds = mediaTimeToSeconds({ time: timeTicks });
+				await this.renderer.render({
+					node: rootNode,
+					time: timeTicks,
+					onRendered: () => videoSource.add(timeSeconds, 1 / fpsFloat),
+				});
+				budget.check();
+
+				this.emit("progress", i / frameCount);
+			}
+
 			if (this.isCancelled) {
 				await output.cancel();
 				this.emit("cancelled");
 				return null;
 			}
 
-			const timeTicks = i * ticksPerFrame;
-			const timeSeconds = mediaTimeToSeconds({ time: timeTicks });
-			await this.renderer.render({ node: rootNode, time: timeTicks });
-			await videoSource.add(timeSeconds, 1 / fpsFloat);
+			videoSource.close();
+			await output.finalize();
+			budget.check();
+			this.emit("progress", 1);
 
-			this.emit("progress", i / frameCount);
+			const buffer = output.target.buffer;
+			if (!buffer) {
+				this.emit("error", new Error("Failed to export video"));
+				return null;
+			}
+
+			this.emit("complete", buffer);
+			return buffer;
+		} catch (error) {
+			// A size/encoder failure is terminal for this attempt. Close encoder and
+			// muxer resources rather than finishing or silently starting a new export.
+			try {
+				await output.cancel();
+			} catch {
+				/* Preserve the original failure. */
+			}
+			throw error;
 		}
-
-		if (this.isCancelled) {
-			await output.cancel();
-			this.emit("cancelled");
-			return null;
-		}
-
-		videoSource.close();
-		await output.finalize();
-		this.emit("progress", 1);
-
-		const buffer = output.target.buffer;
-		if (!buffer) {
-			this.emit("error", new Error("Failed to export video"));
-			return null;
-		}
-
-		this.emit("complete", buffer);
-		return buffer;
 	}
 
 	getCodecMetadata(): {

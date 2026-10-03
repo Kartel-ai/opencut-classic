@@ -9,6 +9,7 @@ import type { MediaAsset } from "@/media/types";
 import { storageService } from "@/services/storage/service";
 import {
 	cacheVideoFinisherExport,
+	VIDEO_FINISHER_EXPORT_MAX_BYTES,
 	readCachedVideoFinisherExport,
 	releaseCachedVideoFinisherExport,
 } from "./video-finisher-export-cache";
@@ -56,7 +57,8 @@ import {
 	VIDEO_FINISHER_HOST_MESSAGE_TYPES,
 } from "./video-finisher-protocol";
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
-import { createProjectLoadQueue, projectMediaForHost, requireProjectMedia } from "./video-finisher-media";
+import { createProjectLoadQueue, createProjectMediaForHost, requireProjectMedia } from "./video-finisher-media";
+import { clearKartelClipFrames } from "./video-finisher-clip-thumbnail";
 import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
 import type { Command, CommandResult } from "@/commands/base-command";
@@ -410,7 +412,7 @@ const STEM_ROUNDING_SECONDS = 0.001;
 export function breakdownStemGeometry({ piece, stemDurationSeconds }: { piece: TimelineElement; stemDurationSeconds: number }) {
 	const range = breakdownSourceRange(piece);
 	if (piece.type !== "video" || !Number.isFinite(stemDurationSeconds) || stemDurationSeconds + STEM_ROUNDING_SECONDS < range.endSeconds) {
-		throw new Error("The separated layer does not cover the exact source range. Original audio is unchanged.");
+		throw new Error(`The separated layer (${stemDurationSeconds.toFixed(6)} s) does not cover the exact source range ending at ${range.endSeconds.toFixed(6)} s. Original audio is unchanged.`);
 	}
 	return {
 		startTime: piece.startTime,
@@ -759,6 +761,7 @@ export function KartelVideoFinisherBridge({
 		const bridgeNonce = query.get("kartel_nonce") ?? "";
 		const bridgeProject = query.get("kartel_project") ?? "";
 		if (!bridgeNonce || bridgeNonce.length > 240 || bridgeProject !== projectId) return;
+		const projectMediaForHost = createProjectMediaForHost();
 		const post = ({
 			type,
 			identity,
@@ -917,7 +920,10 @@ export function KartelVideoFinisherBridge({
           // The generated preview is a disposable cache, sometimes larger than
           // Studio's entire document limit. Timeline/media identity stays intact.
           document: { ...stored.project, metadata: { ...stored.project.metadata, thumbnail: undefined } },
-					media: projectMediaForHost({ project: stored.project, assets: editor.media.getAssets(), sourceId: sourceMediaIdRef.current }),
+					media: projectMediaForHost({
+						project: stored.project, assets: editor.media.getAssets(), sourceId: sourceMediaIdRef.current,
+						retainedMedia: typeof message.payload === "object" && message.payload !== null && "retainedMedia" in message.payload ? message.payload.retainedMedia : undefined,
+					}),
 					openCutCommit: OPEN_CUT_COMMIT,
 				},
 			});
@@ -1411,6 +1417,7 @@ export function KartelVideoFinisherBridge({
 						fps: active.settings.fps,
 						includeAudio: true,
 						requireAudioTrack: true,
+						maxBytes: VIDEO_FINISHER_EXPORT_MAX_BYTES,
 					},
 				});
 				if (!result.success || !result.buffer)
@@ -1662,6 +1669,7 @@ export function KartelVideoFinisherBridge({
 		];
 		return () => {
 			window.removeEventListener("message", onMessage);
+			clearKartelClipFrames();
 			previewStop?.();
 			clearRepairPreview();
 			unsubscribers.forEach((unsubscribe) => unsubscribe());

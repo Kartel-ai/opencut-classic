@@ -205,7 +205,10 @@ async function resolveVideoNode({
 	const frame = await videoCache.getFrameAt({
 		mediaId: node.params.mediaId,
 		file: node.params.file,
-		time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
+		maxSourceSize: context.renderer.previewDecodeSize,
+		time: mediaTimeToSeconds({
+			time: roundMediaTime({ time: sourceTimeTicks }),
+		}),
 	});
 	if (!frame) {
 		return null;
@@ -214,8 +217,8 @@ async function resolveVideoNode({
 	const visualState = resolveVisualState({
 		params: node.params,
 		context,
-		sourceWidth: frame.canvas.width,
-		sourceHeight: frame.canvas.height,
+		sourceWidth: frame.sourceWidth,
+		sourceHeight: frame.sourceHeight,
 	});
 	if (!visualState) {
 		return null;
@@ -224,8 +227,10 @@ async function resolveVideoNode({
 	return {
 		...visualState,
 		source: frame.canvas,
-		sourceWidth: frame.canvas.width,
-		sourceHeight: frame.canvas.height,
+		sourceWidth: frame.sourceWidth,
+		sourceHeight: frame.sourceHeight,
+		textureWidth: frame.canvas.width,
+		textureHeight: frame.canvas.height,
 	};
 }
 
@@ -426,7 +431,9 @@ async function resolveBackdropSource({
 		const frame = await videoCache.getFrameAt({
 			mediaId: node.params.mediaId,
 			file: node.params.file,
-			time: mediaTimeToSeconds({ time: roundMediaTime({ time: sourceTimeTicks }) }),
+			time: mediaTimeToSeconds({
+				time: roundMediaTime({ time: sourceTimeTicks }),
+			}),
 		});
 		if (!frame) {
 			return null;

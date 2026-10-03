@@ -44,7 +44,15 @@ class WasmCompositor {
 	private initializedSize: { width: number; height: number } | null = null;
 	private cache = new Map<string, RenderedCacheEntry | ExternalCacheEntry>();
 
-	ensureInitialized({ width, height }: { width: number; height: number }) {
+	ensureInitialized({
+		width,
+		height,
+		resize = true,
+	}: {
+		width: number;
+		height: number;
+		resize?: boolean;
+	}) {
 		if (!this.canvas) {
 			initCompositor(width, height);
 			this.canvas = getCompositorCanvas();
@@ -53,9 +61,10 @@ class WasmCompositor {
 		}
 
 		if (
-			!this.initializedSize ||
-			this.initializedSize.width !== width ||
-			this.initializedSize.height !== height
+			resize &&
+			(!this.initializedSize ||
+				this.initializedSize.width !== width ||
+				this.initializedSize.height !== height)
 		) {
 			resizeCompositor(width, height);
 			this.initializedSize = { width, height };
@@ -90,9 +99,22 @@ class WasmCompositor {
 	render(frame: FrameDescriptor) {
 		renderFrame(frame);
 		if (isRenderPerfEnabled()) {
-			recordWasmFrameProfile(
-				getLastFrameProfile() as Array<{ name: string; durationMs: number }>,
-			);
+			const profile: unknown = getLastFrameProfile();
+			if (Array.isArray(profile)) {
+				const entries: unknown[] = profile;
+				recordWasmFrameProfile(
+					entries.filter(
+						(entry): entry is { name: string; durationMs: number } =>
+							typeof entry === "object" &&
+							entry !== null &&
+							"name" in entry &&
+							typeof entry.name === "string" &&
+							"durationMs" in entry &&
+							typeof entry.durationMs === "number" &&
+							Number.isFinite(entry.durationMs),
+					),
+				);
+			}
 		}
 	}
 

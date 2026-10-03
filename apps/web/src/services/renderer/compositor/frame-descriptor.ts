@@ -244,8 +244,14 @@ async function collectVisualSourceNode({
 		kind: "external",
 		id: textureId,
 		source,
-		width: sourceWidth,
-		height: sourceHeight,
+		width:
+			node instanceof VideoNode
+				? (node.resolved.textureWidth ?? sourceWidth)
+				: sourceWidth,
+		height:
+			node instanceof VideoNode
+				? (node.resolved.textureHeight ?? sourceHeight)
+				: sourceHeight,
 	});
 
 	const transform = computeVisualTransform({

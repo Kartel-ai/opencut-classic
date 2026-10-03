@@ -29,6 +29,8 @@ export interface ResolvedVisualSourceNodeState extends ResolvedVisualNodeState {
 	source: CanvasImageSource;
 	sourceWidth: number;
 	sourceHeight: number;
+	textureWidth?: number;
+	textureHeight?: number;
 }
 
 export abstract class VisualNode<

@@ -7,6 +7,8 @@ import {
 } from "mediabunny";
 
 interface VideoSinkData {
+	sourceWidth: number;
+	sourceHeight: number;
 	input: Input;
 	sink: CanvasSink;
 	iterator: AsyncGenerator<WrappedCanvas, void, unknown> | null;
@@ -22,17 +24,42 @@ export class VideoCache {
 	private initPromises = new Map<string, Promise<void>>();
 	private frameChain = new Map<string, Promise<unknown>>();
 	private seekGenerations = new Map<string, number>();
+	private sourceFiles = new Map<string, File>();
+	private initializingInputs = new Map<string, Input>();
 
 	async getFrameAt({
 		mediaId,
 		file,
 		time,
+		maxSourceSize,
 	}: {
 		mediaId: string;
 		file: File;
 		time: number;
-	}): Promise<WrappedCanvas | null> {
-		await this.ensureSink({ mediaId, file });
+		maxSourceSize?: number;
+	}): Promise<
+		(WrappedCanvas & { sourceWidth: number; sourceHeight: number }) | null
+	> {
+		const sourceId = mediaId;
+		if (this.sourceFiles.get(mediaId) !== file) {
+			this.clearVideo({ mediaId });
+			this.sourceFiles.set(mediaId, file);
+		}
+		if (maxSourceSize) {
+			const previewPrefix = `${mediaId}:preview:`;
+			mediaId = `${previewPrefix}${maxSourceSize}`;
+			// Keep at most one reduced-resolution decoder per source; native export
+			// and paused-inspection decoders have a separate key.
+			for (const key of new Set([
+				...this.sinks.keys(),
+				...this.initializingInputs.keys(),
+			])) {
+				if (key.startsWith(previewPrefix) && key !== mediaId)
+					this.clearSink(key);
+			}
+		}
+		await this.ensureSink({ mediaId, file, maxSourceSize });
+		if (this.sourceFiles.get(sourceId) !== file) return null;
 
 		const sinkData = this.sinks.get(mediaId);
 		if (!sinkData) return null;
@@ -51,7 +78,14 @@ export class VideoCache {
 			mediaId,
 			current.catch(() => {}),
 		);
-		return current;
+		const frame = await current;
+		return frame
+			? {
+					...frame,
+					sourceWidth: sinkData.sourceWidth,
+					sourceHeight: sinkData.sourceHeight,
+				}
+			: null;
 	}
 
 	private async resolveFrame({
@@ -235,9 +269,11 @@ export class VideoCache {
 	private async ensureSink({
 		mediaId,
 		file,
+		maxSourceSize,
 	}: {
 		mediaId: string;
 		file: File;
+		maxSourceSize?: number;
 	}): Promise<void> {
 		if (this.sinks.has(mediaId)) return;
 
@@ -246,26 +282,30 @@ export class VideoCache {
 			return;
 		}
 
-		const initPromise = this.initializeSink({ mediaId, file });
+		const initPromise = this.initializeSink({ mediaId, file, maxSourceSize });
 		this.initPromises.set(mediaId, initPromise);
 
 		try {
 			await initPromise;
 		} finally {
-			this.initPromises.delete(mediaId);
+			if (this.initPromises.get(mediaId) === initPromise)
+				this.initPromises.delete(mediaId);
 		}
 	}
 	private async initializeSink({
 		mediaId,
 		file,
+		maxSourceSize,
 	}: {
 		mediaId: string;
 		file: File;
+		maxSourceSize?: number;
 	}): Promise<void> {
 		const input = new Input({
 			source: new BlobSource(file),
 			formats: ALL_FORMATS,
 		});
+		this.initializingInputs.set(mediaId, input);
 
 		try {
 			const videoTrack = await input.getPrimaryVideoTrack();
@@ -274,16 +314,32 @@ export class VideoCache {
 			}
 
 			const canDecode = await videoTrack.canDecode();
+			if (this.initializingInputs.get(mediaId) !== input) return;
 			if (!canDecode) {
 				throw new Error("Video codec not supported for decoding");
 			}
 
+			const scale = maxSourceSize
+				? Math.min(
+						1,
+						maxSourceSize /
+							Math.max(videoTrack.displayWidth, videoTrack.displayHeight),
+					)
+				: 1;
 			const sink = new CanvasSink(videoTrack, {
 				poolSize: 3,
 				fit: "contain",
+				...(scale < 1
+					? {
+							width: Math.max(1, Math.round(videoTrack.displayWidth * scale)),
+							height: Math.max(1, Math.round(videoTrack.displayHeight * scale)),
+						}
+					: {}),
 			});
 
 			this.sinks.set(mediaId, {
+				sourceWidth: videoTrack.displayWidth,
+				sourceHeight: videoTrack.displayHeight,
 				input,
 				sink,
 				iterator: null,
@@ -295,12 +351,29 @@ export class VideoCache {
 			});
 		} catch (error) {
 			input.dispose();
+			if (this.initializingInputs.get(mediaId) !== input) return;
 			console.error(`Failed to initialize video sink for ${mediaId}:`, error);
 			throw error;
+		} finally {
+			if (this.initializingInputs.get(mediaId) === input)
+				this.initializingInputs.delete(mediaId);
 		}
 	}
 
 	clearVideo({ mediaId }: { mediaId: string }): void {
+		for (const key of new Set([
+			...this.sinks.keys(),
+			...this.initializingInputs.keys(),
+		])) {
+			if (key === mediaId || key.startsWith(`${mediaId}:preview:`))
+				this.clearSink(key);
+		}
+		this.sourceFiles.delete(mediaId);
+	}
+
+	private clearSink(mediaId: string): void {
+		this.initializingInputs.get(mediaId)?.dispose();
+		this.initializingInputs.delete(mediaId);
 		const sinkData = this.sinks.get(mediaId);
 		if (sinkData) {
 			if (sinkData.iterator) {
@@ -317,9 +390,12 @@ export class VideoCache {
 	}
 
 	clearAll(): void {
-		for (const [mediaId] of this.sinks) {
-			this.clearVideo({ mediaId });
-		}
+		for (const key of new Set([
+			...this.sinks.keys(),
+			...this.initializingInputs.keys(),
+		]))
+			this.clearSink(key);
+		this.sourceFiles.clear();
 	}
 
 	getStats() {

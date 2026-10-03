@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useRef } from "react";
 import { useEditor } from "@/editor/use-editor";
 import { useAssetsPanelStore } from "@/components/editor/panels/assets/assets-panel-store";
 import { AudioWaveform, WAVEFORM_GAIN_SAMPLE_COUNT } from "./audio-waveform";
@@ -1096,11 +1096,13 @@ function TiledMediaContent({
 	track: TimelineTrack;
 }) {
 	const mediaAssets = useEditor((e) => e.media.getAssets());
+	const thumbnailRef = useRef<HTMLSpanElement>(null);
 
 	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
 	const kartelNames = useKartelLayout((state) => state.compact || state.embedded);
 	// DF-048: inside Studio each piece of a split source shows a frame from its own range.
 	const clipFrame = useKartelClipFrame({
+		elementRef: thumbnailRef,
 		asset: element.type === "video" && kartelNames ? mediaAsset : undefined,
 		seconds: kartelClipFrameSeconds({
 			trimStartSeconds: element.trimStart / TICKS_PER_SECOND,
@@ -1115,9 +1117,10 @@ function TiledMediaContent({
 
 	if (!imageUrl) {
 		return (
-			<span className="text-foreground/80 truncate text-xs">
-				{element.name}
-			</span>
+			<>
+				<span ref={thumbnailRef} className="pointer-events-none absolute inset-0" aria-hidden="true" />
+				<span className="text-foreground/80 truncate text-xs">{element.name}</span>
+			</>
 		);
 	}
 
@@ -1126,6 +1129,7 @@ function TiledMediaContent({
 
 	return (
 		<>
+			<span ref={thumbnailRef} className="pointer-events-none absolute inset-0" aria-hidden="true" />
 			<div
 				className="absolute inset-0"
 				style={{
