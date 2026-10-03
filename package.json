@@ -26,7 +26,7 @@
 		"@types/react": "^19.2.18",
 		"@types/react-dom": "^19.2.5",
 		"better-auth": "^1.7.2",
-		"next": "16.2.11",
+		"next": "16.3.3",
 		"opencut-wasm": "^0.2.10"
 	},
 	"devDependencies": {
