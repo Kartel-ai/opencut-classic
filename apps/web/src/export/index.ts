@@ -27,6 +27,9 @@ export interface ExportResult {
 	buffer?: ArrayBuffer;
 	videoCodec?: "h264" | "vp9";
 	audioCodec?: "aac" | "opus" | null;
+	/** Encoded frame size; mp4 rounds odd canvas sides down to even. */
+	width?: number;
+	height?: number;
 	error?: string;
 	cancelled?: boolean;
 }

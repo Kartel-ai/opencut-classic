@@ -1440,8 +1440,8 @@ export function KartelVideoFinisherBridge({
 						time: editor.timeline.getTotalDuration(),
 					}),
 					frameRate: videoFinisherExportFrameRate(active.settings.fps),
-					width: active.settings.canvasSize.width,
-					height: active.settings.canvasSize.height,
+					width: result.width ?? active.settings.canvasSize.width,
+					height: result.height ?? active.settings.canvasSize.height,
 				};
 				await cacheVideoFinisherExport({
 					projectId,

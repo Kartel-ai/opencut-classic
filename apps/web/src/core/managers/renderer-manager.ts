@@ -1,6 +1,7 @@
 import type { EditorCore } from "@/core";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
 import type { ExportOptions, ExportResult } from "@/export";
+import { encodableExportSize } from "@/export/encodable-size";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
 import {
 	SceneExporter,
@@ -171,7 +172,10 @@ export class RendererManager {
 			}
 
 			const exportFps = fps ?? activeProject.settings.fps;
-			const canvasSize = activeProject.settings.canvasSize;
+			const canvasSize = encodableExportSize({
+				...activeProject.settings.canvasSize,
+				format,
+			});
 			await preflightSceneExport({
 				...canvasSize,
 				format,
@@ -242,6 +246,8 @@ export class RendererManager {
 					success: true,
 					buffer,
 					...exporter.getCodecMetadata(),
+					width: canvasSize.width,
+					height: canvasSize.height,
 				};
 			} finally {
 				clearInterval(cancelInterval);
