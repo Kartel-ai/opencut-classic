@@ -133,6 +133,9 @@ export type RepairInsertion = {
 	endSeconds: number;
 	// RS-073: the window of a longer generated take that fills [startSeconds, endSeconds].
 	fit?: TakeFit;
+	// 2026-10-07 (fixes that stack): a take made from a kept take goes above every track, so it
+	// covers the kept take while undecided and the kept take shows again if it is discarded.
+	onTop?: boolean;
 	candidate: {
 		assetId: string;
 		versionId: string;
@@ -272,6 +275,7 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 		startSeconds,
 		endSeconds,
 		...(fit ? { fit } : {}),
+		...(value.onTop === true && semanticRole === "replacement_shot" ? { onTop: true } : {}),
 		candidate,
 	};
 }
@@ -982,9 +986,14 @@ export function KartelVideoFinisherBridge({
 				: built;
 			applyingRef.current = true;
 			try {
+				// On top: the topmost overlay track when it is free across the take, else a new top track.
+				const top = insertion.onTop && created.type === "video" ? activeScene.tracks.overlay[0] : null;
+				const end = element.startTime + element.duration;
+				const topFree = top?.type === "video" && !top.elements.some((other) => other.startTime < end && other.startTime + other.duration > element.startTime);
+				const topTrackId = insertion.onTop && created.type === "video" ? (topFree && top ? top.id : editor.timeline.addTrack({ type: "video", index: 0 })) : null;
 				editor.timeline.insertElement({
 					element,
-					placement: { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
+					placement: topTrackId ? { mode: "explicit", trackId: topTrackId } : { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
 				});
 				const insertedScene = editor.scenes.getActiveScene();
 				const inserted = findRepairElement({
