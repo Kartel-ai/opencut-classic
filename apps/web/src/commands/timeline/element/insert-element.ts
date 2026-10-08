@@ -22,7 +22,7 @@ import { roundMediaTime } from "@/wasm";
 
 type InsertElementPlacement =
 	| { mode: "explicit"; trackId: string }
-	| { mode: "auto"; trackType?: TrackType; insertIndex?: number };
+	| { mode: "auto"; trackType?: TrackType; insertIndex?: number; newTrack?: "highest" };
 
 export interface InsertElementParams {
 	element: CreateTimelineElement;
@@ -239,7 +239,9 @@ export class InsertElementCommand extends Command {
 			strategy:
 				placement.mode === "explicit"
 					? { type: "explicit", trackId: placement.trackId }
-					: { type: "firstAvailable" },
+					: placement.newTrack
+						? { type: "alwaysNew", position: placement.newTrack }
+						: { type: "firstAvailable" },
 		});
 		if (!placementResult) {
 			if (placement.mode === "explicit") {

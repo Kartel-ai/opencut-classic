@@ -990,10 +990,13 @@ export function KartelVideoFinisherBridge({
 				const top = insertion.onTop && created.type === "video" ? activeScene.tracks.overlay[0] : null;
 				const end = element.startTime + element.duration;
 				const topFree = top?.type === "video" && !top.elements.some((other) => other.startTime < end && other.startTime + other.duration > element.startTime);
-				const topTrackId = insertion.onTop && created.type === "video" ? (topFree && top ? top.id : editor.timeline.addTrack({ type: "video", index: 0 })) : null;
 				editor.timeline.insertElement({
 					element,
-					placement: topTrackId ? { mode: "explicit", trackId: topTrackId } : { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
+					placement: topFree && top
+						? { mode: "explicit", trackId: top.id }
+						: insertion.onTop && created.type === "video"
+							? { mode: "auto", trackType: "video", newTrack: "highest" }
+							: { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
 				});
 				const insertedScene = editor.scenes.getActiveScene();
 				const inserted = findRepairElement({
