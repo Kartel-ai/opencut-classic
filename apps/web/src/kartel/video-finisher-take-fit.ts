@@ -4,7 +4,7 @@
 
 // What this editor can do beyond bridge version 1; Studio reads the list from EDITOR_READY and
 // PROJECT_LOADED and sends a fit or asks for a clip only when the editor advertises it.
-export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export"] as const;
+export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export", "take-clip-export"] as const;
 
 // A fit may retime a take a little so a window of it fills the shot; more reads as slow motion
 // or a skip.
@@ -60,6 +60,15 @@ export function normalizedClipRange({ value, sourceDurationSeconds }: { value: u
 	if (end - start < 0.5 || end - start > 15) return null;
 	if (Number.isFinite(sourceDurationSeconds) && sourceDurationSeconds > 0 && end > sourceDurationSeconds + 0.05) return null;
 	return { sourceStartSeconds: start, sourceEndSeconds: Math.min(end, sourceDurationSeconds > 0 ? sourceDurationSeconds : end) };
+}
+
+// 2026-10-07 (fixes that stack): a clip may be cut from a take already placed on the timeline
+// instead of the source, so a second fix on a shot starts from the kept take. Only a placed
+// repair take is named this way; anything else is the source.
+export function clipMediaId(value: unknown): string | null {
+	if (!value || typeof value !== "object" || !("mediaId" in value)) return null;
+	const mediaId = (value as { mediaId?: unknown }).mediaId;
+	return typeof mediaId === "string" && /^kartel-repair-[A-Za-z0-9_-]{1,200}$/.test(mediaId) ? mediaId : null;
 }
 
 // The clip's frame size: the source's, or scaled so its short edge is at most `maxShortEdge`,

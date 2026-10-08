@@ -123,6 +123,16 @@ describe("normalizedRepairInsertion", () => {
 			candidate: { ...input.candidate, mimeType: "video/mp4" },
 		})).toBeNull();
 	});
+	test("a take made from a kept take may ask to go on top; nothing else may", () => {
+		const shot = {
+			semanticRole: "replacement_shot" as const, clipId: "clip-3", startSeconds: 12.25, endSeconds: 18.4,
+			candidate: { assetId: "asset-2", versionId: "version-2", name: "take.mp4", src: "https://studio.example/private/take.mp4", mimeType: "video/mp4", byteSize: 2048, sha256: "b".repeat(64), durationSeconds: 6.15 },
+		};
+		expect(normalizedRepairInsertion({ ...shot, onTop: true })).toEqual({ ...shot, onTop: true });
+		expect(normalizedRepairInsertion({ ...shot, onTop: "yes" })).toEqual(shot);
+		const voice = { ...shot, semanticRole: "replacement_voice" as const, candidate: { ...shot.candidate, name: "line.wav", mimeType: "audio/wav" } };
+		expect(normalizedRepairInsertion({ ...voice, onTop: true })).toEqual(voice);
+	});
 });
 
 describe("repairMediaId", () => {

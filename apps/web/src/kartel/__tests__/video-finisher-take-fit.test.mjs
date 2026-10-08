@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-	VIDEO_FINISHER_EDITOR_CAPABILITIES, normalizedClipRange, normalizedTakeFit, takeFitGeometrySeconds,
+	VIDEO_FINISHER_EDITOR_CAPABILITIES, clipMediaId, normalizedClipRange, normalizedTakeFit, takeFitGeometrySeconds,
 } from "../video-finisher-take-fit.ts";
 
 test("the editor advertises take fits and clip export", () => {
-	assert.deepEqual([...VIDEO_FINISHER_EDITOR_CAPABILITIES], ["take-fit", "clip-export"]);
+	assert.deepEqual([...VIDEO_FINISHER_EDITOR_CAPABILITIES], ["take-fit", "clip-export", "take-clip-export"]);
 });
 
 test("a fit is optional, and a sent fit must stay within a small retime", () => {
@@ -38,4 +38,12 @@ test("a clip is scaled so its short edge is at most the bound, keeping the aspec
 	assert.deepEqual(clipOutputSize({ width: 1920, height: 1080, maxShortEdge: 720 }), { width: 1280, height: 720 });
 	assert.equal(clipOutputSize({ width: 544, height: 680, maxShortEdge: 720 }), null);
 	assert.equal(clipOutputSize({ width: 1080, height: 1350, maxShortEdge: 0 }), null);
+});
+
+test("a clip may be cut from a placed repair take, named by its media id", () => {
+	assert.equal(clipMediaId({ sourceStartSeconds: 0, sourceEndSeconds: 2, mediaId: "kartel-repair-repair-1a2b" }), "kartel-repair-repair-1a2b");
+	assert.equal(clipMediaId({ sourceStartSeconds: 0, sourceEndSeconds: 2 }), null);
+	assert.equal(clipMediaId({ mediaId: "source-media" }), null);
+	assert.equal(clipMediaId({ mediaId: "kartel-repair-../x" }), null);
+	assert.equal(clipMediaId(null), null);
 });

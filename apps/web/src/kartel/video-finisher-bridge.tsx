@@ -45,6 +45,7 @@ import {
 	VIDEO_FINISHER_EDITOR_CAPABILITIES,
 	clipOutputSize,
 	normalizedClipRange,
+	clipMediaId,
 	normalizedTakeFit,
 	takeFitGeometrySeconds,
 	type TakeFit,
@@ -132,6 +133,9 @@ export type RepairInsertion = {
 	endSeconds: number;
 	// RS-073: the window of a longer generated take that fills [startSeconds, endSeconds].
 	fit?: TakeFit;
+	// 2026-10-07 (fixes that stack): a take made from a kept take goes above every track, so it
+	// covers the kept take while undecided and the kept take shows again if it is discarded.
+	onTop?: boolean;
 	candidate: {
 		assetId: string;
 		versionId: string;
@@ -271,6 +275,7 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 		startSeconds,
 		endSeconds,
 		...(fit ? { fit } : {}),
+		...(value.onTop === true && semanticRole === "replacement_shot" ? { onTop: true } : {}),
 		candidate,
 	};
 }
@@ -981,9 +986,17 @@ export function KartelVideoFinisherBridge({
 				: built;
 			applyingRef.current = true;
 			try {
+				// On top: the topmost overlay track when it is free across the take, else a new top track.
+				const top = insertion.onTop && created.type === "video" ? activeScene.tracks.overlay[0] : null;
+				const end = element.startTime + element.duration;
+				const topFree = top?.type === "video" && !top.elements.some((other) => other.startTime < end && other.startTime + other.duration > element.startTime);
 				editor.timeline.insertElement({
 					element,
-					placement: { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
+					placement: topFree && top
+						? { mode: "explicit", trackId: top.id }
+						: insertion.onTop && created.type === "video"
+							? { mode: "auto", trackType: "video", newTrack: "highest" }
+							: { mode: "auto", trackType: created.type === "audio" ? "audio" : "video" },
 				});
 				const insertedScene = editor.scenes.getActiveScene();
 				const inserted = findRepairElement({
@@ -1029,7 +1042,10 @@ export function KartelVideoFinisherBridge({
 		// area edit works on). The source media stays untouched; the bytes go back to Studio, which
 		// stores them as an Asset Library version before any provider sees them.
 		const exportClip = async (message: VideoFinisherHostMessage) => {
-			const source = editor.media.getAssets().find((asset) => asset.id === sourceMediaIdRef.current);
+			// A named placed take is cut instead of the source (take-clip-export); its range is in its own time.
+			const takeId = clipMediaId(message.payload);
+			const source = editor.media.getAssets().find((asset) => asset.id === (takeId ?? sourceMediaIdRef.current));
+			if (takeId && (!source?.file || source.type !== "video")) throw new Error("That take is not loaded in this editor.");
 			if (!source?.file) throw new Error("The source video is not loaded in this editor.");
 			const range = normalizedClipRange({ value: message.payload, sourceDurationSeconds: Number(source.duration) });
 			if (!range) throw new Error("Studio asked for a clip outside the source or of the wrong length.");
