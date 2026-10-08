@@ -45,6 +45,7 @@ import {
 	VIDEO_FINISHER_EDITOR_CAPABILITIES,
 	clipOutputSize,
 	normalizedClipRange,
+	clipMediaId,
 	normalizedTakeFit,
 	takeFitGeometrySeconds,
 	type TakeFit,
@@ -1029,7 +1030,10 @@ export function KartelVideoFinisherBridge({
 		// area edit works on). The source media stays untouched; the bytes go back to Studio, which
 		// stores them as an Asset Library version before any provider sees them.
 		const exportClip = async (message: VideoFinisherHostMessage) => {
-			const source = editor.media.getAssets().find((asset) => asset.id === sourceMediaIdRef.current);
+			// A named placed take is cut instead of the source (take-clip-export); its range is in its own time.
+			const takeId = clipMediaId(message.payload);
+			const source = editor.media.getAssets().find((asset) => asset.id === (takeId ?? sourceMediaIdRef.current));
+			if (takeId && (!source?.file || source.type !== "video")) throw new Error("That take is not loaded in this editor.");
 			if (!source?.file) throw new Error("The source video is not loaded in this editor.");
 			const range = normalizedClipRange({ value: message.payload, sourceDurationSeconds: Number(source.duration) });
 			if (!range) throw new Error("Studio asked for a clip outside the source or of the wrong length.");
