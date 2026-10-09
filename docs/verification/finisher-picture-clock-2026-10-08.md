@@ -1,0 +1,9 @@
+# Frame-preserving clip export
+
+The deployed DEV base is 307a3fc89265da3cb045e170aa47f292c3c19150 (`/healthz`, October 8). A 145-frame H.264 source at 24 fps exports as only 142 frames through Mediabunny packet copying. Forcing transcoding preserves all 145 at the same rate. The paired Studio change replaces only the proven 6.048-second container tail with the picture end, 145/24 seconds; the exact preflight guard remains intact.
+
+The patch adds `forceTranscode: true` to the actual EXPORT_CLIP conversion, preserving trim, named-take selection, optional geometry and silent output. No frame rate is imposed. The browser harness in the paired Studio PR executes this actual callback with Mediabunny 1.41.0 and the exact source: 145 frames and strict admission pass, zero platform writes/provider calls. The old conversion produces 142 and is rejected. Original media/audio is untouched.
+
+Validation: all 20 Node bridge tests pass, including the new actual-callback export regression. Next/Turbopack production compile, type checking and static generation pass. Local build uses existing root/app dependency junctions, a temporary root containing those junctions, and non-secret build placeholders; the Next config is restored byte-for-byte. A default local root rejected the junction; a webpack attempt could not load the existing WASM import. Neither setup attempt is reported as passing. No config or lockfile change is included.
+
+Deployment is pending explicit approval: Railway project 911688df-e2ee-4fc6-b95c-d612f2a6b03c, development 4428a8ab-c3ae-4c14-9106-00658edc49a0, service ef4db032-743c-4d78-9df3-1ce39c69f472. This service has no configured Git trigger branch. Its current deployment is 422e0b8c-8319-44bf-8e51-ab159a792f86. The draft PR targets the deployed source branch, never main. No manual Railway action, main/staging/PROD change, paid job or real-project edit has occurred. Hosted acceptance remains pending both the Studio and editor deployment.

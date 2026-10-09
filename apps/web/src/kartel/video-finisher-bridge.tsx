@@ -1057,7 +1057,9 @@ export function KartelVideoFinisherBridge({
 				input,
 				output,
 				trim: { start: range.sourceStartSeconds, end: range.sourceEndSeconds },
-				video: size ? { codec: "avc", width: size.width, height: size.height, fit: "contain" } : { codec: "avc" },
+				// Decode the requested picture range even when codec and size already match.
+				// Packet-copy trimming can omit leading reordered frames in H.264 sources.
+				video: { codec: "avc", forceTranscode: true, ...(size ? { width: size.width, height: size.height, fit: "contain" as const } : {}) },
 				audio: { discard: true },
 			});
 			if (!conversion.isValid) throw new Error("This browser cannot cut the source into an H.264 clip.");
