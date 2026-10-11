@@ -18,6 +18,7 @@ import { usePanelStore } from "@/editor/panel-store";
 import { usePasteMedia } from "@/media/use-paste-media";
 import { MobileGate } from "@/components/editor/mobile-gate";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTheme } from "next-themes";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 import { getTrackHeight } from "@/timeline/components/track-layout";
 import { useEditor } from "@/editor/use-editor";
@@ -38,6 +39,7 @@ import {
 } from "@/timeline/bookmarks/index";
 import { KartelVideoFinisherBridge } from "@/kartel/video-finisher-bridge";
 import { useKartelLayout } from "@/kartel/video-finisher-layout";
+import { kartelTimelineShare as kartelTimelineShareFor } from "@/kartel/video-finisher-studio-look";
 import {
 	isKartelVideoFinisherRoute,
 	shouldShowEditorMobileGate,
@@ -111,7 +113,26 @@ function EditorLayout() {
 	const kartelLanePixels = activeScene
 		? [...activeScene.tracks.overlay, activeScene.tracks.main, ...activeScene.tracks.audio].reduce((sum, track) => sum + getTrackHeight({ type: track.type }) + 6, 0)
 		: 71;
-	const kartelTimelineShare = typeof window === "undefined" ? 36 : Math.min(62, Math.max(26, ((132 + kartelLanePixels) / window.innerHeight) * 100));
+	// RS-283: the share follows the frame's live height, so a frame that opened short and then grew
+	// gives the preview back the room (it was read from innerHeight once per render).
+	const [kartelFrameHeight, setKartelFrameHeight] = useState(() => (typeof window === "undefined" ? 0 : window.innerHeight));
+	useEffect(() => {
+		const update = () => setKartelFrameHeight(window.innerHeight);
+		window.addEventListener("resize", update);
+		update();
+		return () => window.removeEventListener("resize", update);
+	}, []);
+	const kartelTimelineShare = kartelTimelineShareFor({ lanePixels: kartelLanePixels, frameHeight: kartelFrameHeight });
+	// RS-283: inside Studio the editor wears Studio's theme (sent by Studio, not the computer's)
+	// and marks the document so the Kartel colours in globals.css apply only there.
+	const kartelEmbedded = useKartelLayout((state) => state.embedded);
+	const kartelTheme = useKartelLayout((state) => state.theme);
+	const { setTheme } = useTheme();
+	useEffect(() => {
+		if (!kartelEmbedded) return;
+		document.documentElement.dataset.kartelEmbed = "";
+		if (kartelTheme) setTheme(kartelTheme);
+	}, [kartelEmbedded, kartelTheme, setTheme]);
 	useEffect(() => {
 		if (kartelCompact) kartelTimelineRef.current?.resize(kartelTimelineShare);
 	}, [kartelCompact, kartelTimelineShare]);

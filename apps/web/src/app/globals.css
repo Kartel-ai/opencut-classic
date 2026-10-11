@@ -289,3 +289,43 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* RS-283 (Elliot 2026-10-10, approved on the mock) */
+/* Inside Studio the editor wears Studio's tokens (src/v2/production-theme.css): oat ground, white
+   panels, warm lines and the olive accent in light; the black ladder and olive ink in dark. The
+   preview stays on the media well in both (#282828 light, #040404 dark), as every Studio viewer. */
+html[data-kartel-embed]:not(.dark) {
+  --background: #f4f3ef; --foreground: #1a1a17; --card: #ffffff; --card-foreground: #1a1a17;
+  --popover: #ffffff; --popover-hover: #f0efe9; --popover-foreground: #1a1a17;
+  --primary: #3d5a1a; --primary-foreground: #ffffff;
+  --secondary: #eef0e6; --secondary-border: #d9dccb; --secondary-foreground: #3d5a1a;
+  --muted: #e7e6e0; --muted-foreground: #5a5a50; --accent: #f0efe9; --accent-foreground: #1a1a17;
+  --border: #e7e6e0; --input: #fafaf7; --ring: rgba(61, 90, 26, .55);
+}
+html[data-kartel-embed]:not(.dark) .panel {
+  --background: #ffffff; --foreground: #1a1a17; --card: #ffffff; --card-foreground: #1a1a17;
+  --secondary: #eef0e6; --secondary-border: #d9dccb; --secondary-foreground: #3d5a1a;
+  --muted: #e7e6e0; --muted-foreground: #5a5a50; --accent: #f0efe9; --accent-foreground: #1a1a17;
+  --border: #e7e6e0; --input: #fafaf7; --ring: rgba(61, 90, 26, .55);
+}
+html[data-kartel-embed].dark {
+  --background: #070707; --foreground: #f2f2f2; --card: #141414; --card-foreground: #f2f2f2;
+  --popover: #1f1f1f; --popover-hover: #262626; --popover-foreground: #f2f2f2;
+  --primary: #7fae3a; --primary-foreground: #070707;
+  --secondary: #1d2614; --secondary-border: #2f3b1e; --secondary-foreground: #93c24b;
+  --muted: #2a2a2a; --muted-foreground: #a7a7a1; --accent: #1f1f1f; --accent-foreground: #f2f2f2;
+  --border: #2a2a2a; --input: #1f1f1f; --ring: rgba(127, 174, 58, .75);
+}
+html[data-kartel-embed].dark .panel {
+  --background: #141414; --foreground: #f2f2f2; --card: #141414; --card-foreground: #f2f2f2;
+  --secondary: #1d2614; --secondary-border: #2f3b1e; --secondary-foreground: #93c24b;
+  --muted: #2a2a2a; --muted-foreground: #a7a7a1; --accent: #1f1f1f; --accent-foreground: #f2f2f2;
+  --border: #2a2a2a; --input: #1f1f1f; --ring: rgba(127, 174, 58, .75);
+}
+html[data-kartel-embed] [data-kartel-preview].panel {
+  --background: #282828; --foreground: #f7f7f5; --muted-foreground: #b9b9b2;
+  --accent: #333333; --accent-foreground: #f7f7f5; --border: transparent; --primary: #f7f7f5;
+  --secondary: #333333; --secondary-border: #3f3f3f; --secondary-foreground: #f7f7f5; --input: #333333;
+  color: var(--foreground);
+}
+html[data-kartel-embed].dark [data-kartel-preview].panel { --background: #040404; --accent: #1a1a1a; }
