@@ -60,6 +60,7 @@ import {
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 import { createProjectLoadQueue, createProjectMediaForHost, requireProjectMedia } from "./video-finisher-media";
 import { clearKartelClipFrames } from "./video-finisher-clip-thumbnail";
+import { normalizedKartelTheme } from "./video-finisher-studio-look";
 import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
 import type { Command, CommandResult } from "@/commands/base-command";
@@ -1517,6 +1518,9 @@ export function KartelVideoFinisherBridge({
 			const layout = isRecord(message.payload) ? message.payload.layout : undefined;
 			if (layout !== "compact" && layout !== "full") throw new Error("Unknown editor layout.");
 			useKartelLayout.getState().setCompact(layout === "compact");
+			// RS-283: Studio sends its theme here when the person switches it with the room open.
+			const theme = normalizedKartelTheme(isRecord(message.payload) ? message.payload.theme : undefined);
+			if (theme) useKartelLayout.getState().setTheme(theme);
 			post({ type: "LAYOUT_SET", identity: message, payload: { layout } });
 		};
 
