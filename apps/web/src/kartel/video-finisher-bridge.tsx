@@ -65,6 +65,7 @@ import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
 import type { Command, CommandResult } from "@/commands/base-command";
 import { canJoinPieces, joinedPiece } from "./video-finisher-join";
+import { soundtrackTracks } from "./video-finisher-soundtrack";
 
 // DF-049b: one breakdown apply (a split or merge with its names and layers) as one history step.
 // Whichever undo reverses it, Studio's Undo through UNDO_EDITS or OpenCut's own Ctrl+Z inside the
@@ -125,6 +126,7 @@ export type HostProject = {
 export type RepairInsertion = {
 	semanticRole:
 		| "replacement_voice"
+		| "mix_preview"
 		| "replacement_shot"
 		| "insert_shot"
 		| "keyframe"
@@ -240,6 +242,7 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 	let semanticRole: RepairInsertion["semanticRole"];
 	switch (rawSemanticRole) {
 		case "replacement_voice":
+		case "mix_preview":
 		case "replacement_shot":
 		case "insert_shot":
 		case "keyframe":
@@ -252,7 +255,7 @@ export function normalizedRepairInsertion(value: unknown): RepairInsertion | nul
 	const startSeconds = Number(value.startSeconds);
 	const endSeconds = Number(value.endSeconds);
 	// An operator recording is PCM WAV; a synthesized voice line arrives from the provider as MP3.
-	const expectedMIME = semanticRole === "replacement_voice"
+	const expectedMIME = semanticRole === "replacement_voice" || semanticRole === "mix_preview"
 		? ["audio/wav", "audio/mpeg"]
 		: semanticRole === "keyframe"
 			? ["image/png", "image/jpeg", "image/webp"]
@@ -962,8 +965,8 @@ export function KartelVideoFinisherBridge({
 			});
 			if (!created) throw new Error("OpenCut could not retain the repair candidate.");
 			if (
-				(insertion.semanticRole === "replacement_voice" && created.type !== "audio") ||
-				(insertion.semanticRole !== "replacement_voice" && insertion.semanticRole !== "keyframe" && created.type !== "video") ||
+				(["replacement_voice", "mix_preview"].includes(insertion.semanticRole) && created.type !== "audio") ||
+				(!["replacement_voice", "mix_preview", "keyframe"].includes(insertion.semanticRole) && created.type !== "video") ||
 				(insertion.semanticRole === "keyframe" && created.type !== "image")
 			) throw new Error("The decoded repair candidate does not match its declared role.");
 			const targetDuration = insertion.endSeconds - insertion.startSeconds;
@@ -991,7 +994,13 @@ export function KartelVideoFinisherBridge({
 				const top = insertion.onTop && created.type === "video" ? activeScene.tracks.overlay[0] : null;
 				const end = element.startTime + element.duration;
 				const topFree = top?.type === "video" && !top.elements.some((other) => other.startTime < end && other.startTime + other.duration > element.startTime);
-				editor.timeline.insertElement({
+				if (insertion.semanticRole === "mix_preview") {
+					if (element.type !== "audio") throw new Error("The new soundtrack is not audio.");
+					if (Math.abs(Number(created.duration) - targetDuration) > 0.01) throw new Error("The new soundtrack does not match the original picture clock.");
+					const before = structuredClone(activeScene.tracks);
+					const after = soundtrackTracks({ tracks: before, element: { ...element, id: `sound-element-${message.operationId}` }, trackId: `sound-${message.operationId}` });
+					editor.command.execute({ command: new TracksSnapshotCommand({ before, after }) });
+				} else editor.timeline.insertElement({
 					element,
 					placement: topFree && top
 						? { mode: "explicit", trackId: top.id }
@@ -1025,6 +1034,25 @@ export function KartelVideoFinisherBridge({
 			} finally {
 				applyingRef.current = false;
 			}
+		};
+
+		const applySoundtrack = async (message: VideoFinisherHostMessage) => {
+			const payload = message.payload;
+			const seconds = Number(payload?.durationSeconds);
+			const tracks = editor.scenes.getActiveScene().tracks;
+			const first = tracks.main.elements.find(element => element.type === "video" && element.mediaId === sourceMediaIdRef.current);
+			if (!first || payload?.sourceVersionId !== sourceMediaIdRef.current || !Number.isFinite(seconds) || seconds < 1 || seconds > 600) throw new Error("The new sound belongs to a different source video.");
+			if (tracks.overlay.some(track => track.elements.some(element => element.type === "video" || element.type === "image"))) throw new Error("Export the composited picture as a new source before keeping this sound.");
+			const layout = sourceLayout();
+			let cursor = 0;
+			for (const clip of [...layout.clips].sort((a,b) => a.startSeconds-b.startSeconds)) {
+				if (clip.sourceStartSeconds === null || clip.sourceEndSeconds === null) throw new Error("The original source clock is unknown.");
+				if (Math.abs(clip.startSeconds-cursor)>0.01 || Math.abs(clip.sourceStartSeconds-cursor)>0.01 || Math.abs(clip.endSeconds-clip.sourceEndSeconds)>0.01) throw new Error("Export the edited picture as a new source before keeping this sound.");
+				cursor=clip.endSeconds;
+			}
+			const originalTail = cursor - seconds;
+			if (originalTail < -0.001 || originalTail > 0.05) throw new Error("The new sound does not cover this picture.");
+			await insertReplacement({ ...message, payload: { ...payload, semanticRole: "mix_preview", clipId: first.id, startSeconds: 0, endSeconds: seconds } });
 		};
 
 		const observeReplacement = async (message: VideoFinisherHostMessage) => {
@@ -1578,6 +1606,8 @@ export function KartelVideoFinisherBridge({
 						? save(message)
 						: message.type === "INSERT_REPLACEMENT"
 							? insertReplacement(message)
+							: message.type === "APPLY_SOUNDTRACK"
+								? applySoundtrack(message)
 							: message.type === "OBSERVE_REPLACEMENT"
 								? observeReplacement(message)
 								: message.type === "OBSERVE_EXPORT"
@@ -1608,7 +1638,7 @@ export function KartelVideoFinisherBridge({
 							? "LOAD_FAILED"
 							: message.type === "SAVE_PROJECT"
 								? "SAVE_FAILED"
-								: message.type === "INSERT_REPLACEMENT" || message.type === "OBSERVE_REPLACEMENT"
+								: message.type === "INSERT_REPLACEMENT" || message.type === "OBSERVE_REPLACEMENT" || message.type === "APPLY_SOUNDTRACK"
 									? "REPAIR_FAILED"
 									: message.type === "PREVIEW_RANGE"
 										? "PREVIEW_FAILED"
