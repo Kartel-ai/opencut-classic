@@ -1050,7 +1050,8 @@ export function KartelVideoFinisherBridge({
 				if (Math.abs(clip.startSeconds-cursor)>0.01 || Math.abs(clip.sourceStartSeconds-cursor)>0.01 || Math.abs(clip.endSeconds-clip.sourceEndSeconds)>0.01) throw new Error("Export the edited picture as a new source before keeping this sound.");
 				cursor=clip.endSeconds;
 			}
-			if (Math.abs(cursor-seconds)>0.01) throw new Error("The new sound does not cover this picture.");
+			const originalTail = cursor - seconds;
+			if (originalTail < -0.001 || originalTail > 0.05) throw new Error("The new sound does not cover this picture.");
 			await insertReplacement({ ...message, payload: { ...payload, semanticRole: "mix_preview", clipId: first.id, startSeconds: 0, endSeconds: seconds } });
 		};
 
