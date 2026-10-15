@@ -13,6 +13,7 @@ import { isLeafChannelData } from "@/animation/channel-data";
 import { VOLUME_DB_MAX, VOLUME_DB_MIN } from "@/timeline/audio-constants";
 import type { SceneTracks, TimelineElement, TimelineTrack } from "@/timeline";
 import { mediaTimeFromSeconds, mediaTimeToSeconds } from "@/wasm";
+import { isKartelEffectsTrack } from "./video-finisher-soundtrack";
 
 // RS-067 (Elliot, 2026-09-22): the free, reversible edits Studio's seat applies at once. Studio
 // plans them from the operator's sentence (`videoFinisherTimelineEdits.js`); the editor
@@ -20,6 +21,8 @@ import { mediaTimeFromSeconds, mediaTimeToSeconds } from "@/wasm";
 // OpenCut snapshot command, so the reply's Undo and OpenCut's own undo reverse the same step.
 
 export type KartelLaneRole = "dialogue" | "background";
+// RS-324: levels and mute also reach the Effects track an effects-only Keep added.
+export type KartelLevelRole = KartelLaneRole | "effects";
 export type KartelTimelineEdit =
 	| { kind: "ripple_delete"; startSeconds: number; endSeconds: number }
 	| {
@@ -29,14 +32,19 @@ export type KartelTimelineEdit =
 			rampSeconds: number;
 			regions: { startSeconds: number; endSeconds: number }[];
 	  }
-	| { kind: "level"; role: KartelLaneRole; deltaDb: number }
-	| { kind: "mute"; role: KartelLaneRole; muted: boolean }
+	| { kind: "level"; role: KartelLevelRole; deltaDb: number }
+	| { kind: "mute"; role: KartelLevelRole; muted: boolean }
 	| { kind: "remove_take"; mediaIdPrefix: string };
 
 const MAX_EDITS = 12;
 const MAX_REGIONS = 60;
 const DB_LIMIT = 24;
-const isRole = (value: unknown): value is KartelLaneRole => value === "dialogue" || value === "background";
+const isRole = (value: unknown): value is KartelLevelRole => value === "dialogue" || value === "background" || value === "effects";
+// The audio a level or mute reaches: a separated layer by its media, the Effects track by its id.
+const inRole = (track: TimelineTrack, element: TimelineElement, role: KartelLevelRole) => role === "effects"
+	? isKartelEffectsTrack(track)
+	: "mediaId" in element && kartelStemRole(element.mediaId) === role;
+const roleNoun = (role: KartelLevelRole) => (role === "background" ? "music" : role === "effects" ? "effects" : "voice");
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 const finite = (value: unknown): value is number =>
@@ -171,7 +179,7 @@ export function applyKartelTimelineEdits({ editor, edits }: { editor: TimelineEd
 				let shifted = 0;
 				for (const track of tracksNow().audio) {
 					for (const element of track.elements) {
-						if (!("mediaId" in element) || kartelStemRole(element.mediaId) !== edit.role) continue;
+						if (!inRole(track, element, edit.role)) continue;
 						updates.push({ trackId: track.id, elementId: element.id, patch: { params: { ...(element as { params: Record<string, unknown> }).params, volume: clampDb(baseVolume(element) + edit.deltaDb) } } as Partial<TimelineElement> });
 						// A ducked clip follows its keyframes, so they move by the same amount.
 						for (const key of volumeKeys(element)) {
@@ -180,15 +188,15 @@ export function applyKartelTimelineEdits({ editor, edits }: { editor: TimelineEd
 						}
 					}
 				}
-				if (!updates.length) throw new Error(`There is no separated ${edit.role === "background" ? "music" : "voice"} track to change.`);
+				if (!updates.length) throw new Error(`There is no separated ${roleNoun(edit.role)} track to change.`);
 				run(new UpdateElementsCommand({ updates }));
 				applied.push({ kind: "level", role: edit.role, deltaDb: edit.deltaDb, clips: updates.length, keyframes: shifted });
 			} else if (edit.kind === "mute") {
 				const scene = tracksNow();
-				const audio = scene.audio.map((track) => track.elements.some((element) => "mediaId" in element && kartelStemRole(element.mediaId) === edit.role)
+				const audio = scene.audio.map((track) => track.elements.some((element) => inRole(track, element, edit.role))
 					? { ...track, muted: edit.muted }
 					: track);
-				if (audio.every((track, index) => track === scene.audio[index])) throw new Error(`There is no separated ${edit.role === "background" ? "music" : "voice"} track to ${edit.muted ? "mute" : "unmute"}.`);
+				if (audio.every((track, index) => track === scene.audio[index])) throw new Error(`There is no separated ${roleNoun(edit.role)} track to ${edit.muted ? "mute" : "unmute"}.`);
 				editor.timeline.updateTracks({ ...scene, audio });
 				applied.push({ kind: "mute", role: edit.role, muted: edit.muted });
 			} else if (edit.kind === "remove_take") {
