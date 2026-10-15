@@ -23,6 +23,7 @@ import {
 import { useTimelineZoom } from "@/timeline/hooks/use-timeline-zoom";
 import { useKartelLayout } from "@/kartel/video-finisher-layout";
 import { kartelSoloTrackId, kartelSoloTracks } from "@/kartel/video-finisher-solo";
+import { isKartelEffectsTrack } from "@/kartel/video-finisher-soundtrack";
 import { TracksSnapshotCommand } from "@/commands/timeline";
 import { BASE_TIMELINE_PIXELS_PER_SECOND } from "@/timeline/scale";
 import { mediaTimeToSeconds } from "@/wasm";
@@ -964,6 +965,8 @@ function TrackIcon({ track }: { track: TimelineTrack }) {
 // RS-067 mock: the Studio embed names its lanes by what they carry.
 function kartelLaneName({ track, mainTrackId }: { track: TimelineTrack; mainTrackId: string }): string {
 	if (track.id === mainTrackId) return "Video";
+	// RS-324: the Sound step's effects take sits beside the dialogue and music lanes.
+	if (isKartelEffectsTrack(track)) return "Effects";
 	const media = track.elements.map((element) => ("mediaId" in element ? String(element.mediaId) : "")).find(Boolean) ?? "";
 	if (media.startsWith("kartel-stem-dialogue")) return "Voice";
 	if (media.startsWith("kartel-stem-background")) return "Music & effects";

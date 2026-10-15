@@ -998,7 +998,8 @@ export function KartelVideoFinisherBridge({
 					if (element.type !== "audio") throw new Error("The new soundtrack is not audio.");
 					if (Math.abs(Number(created.duration) - targetDuration) > 0.01) throw new Error("The new soundtrack does not match the original picture clock.");
 					const before = structuredClone(activeScene.tracks);
-					const after = soundtrackTracks({ tracks: before, element: { ...element, id: `sound-element-${message.operationId}` }, trackId: `sound-${message.operationId}` });
+					const mix = isRecord(message.payload) && message.payload.mix === "effects" ? "effects" : undefined;
+					const after = soundtrackTracks({ tracks: before, element: { ...element, id: `sound-element-${message.operationId}` }, trackId: `sound-${message.operationId}`, mix });
 					editor.command.execute({ command: new TracksSnapshotCommand({ before, after }) });
 				} else editor.timeline.insertElement({
 					element,
