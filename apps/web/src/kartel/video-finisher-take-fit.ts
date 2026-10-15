@@ -4,7 +4,9 @@
 
 // What this editor can do beyond bridge version 1; Studio reads the list from EDITOR_READY and
 // PROJECT_LOADED and sends a fit or asks for a clip only when the editor advertises it.
-export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement"] as const;
+// RS-313: `stage-layout` is the picture alone (Studio draws the shots), from `kartel_timeline=hidden`
+// at open and the `stage` layout of SET_LAYOUT after.
+export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement", "stage-layout"] as const;
 
 // A fit may retime a take a little so a window of it fills the shot; more reads as slow motion
 // or a skip.

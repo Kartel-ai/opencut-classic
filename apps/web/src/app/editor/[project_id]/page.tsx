@@ -104,6 +104,7 @@ function EditorLayout() {
 	// RS-067 mock: inside Studio the editor is the preview and the timeline; the host's Advanced
 	// switch brings OpenCut's assets and properties panels back.
 	const kartelCompact = useKartelLayout((state) => state.compact);
+	const kartelTimelineShown = useKartelLayout((state) => state.timeline);
 	const activeScene = useEditor((editor) =>
 		editor.scenes.getActiveSceneOrNull(),
 	);
@@ -176,6 +177,19 @@ function EditorLayout() {
 			),
 		[overlaySource.definitions, overlays],
 	);
+
+	// RS-313: the stage layout is the picture alone; Studio draws the shots under it.
+	if (kartelCompact && !kartelTimelineShown) {
+		return (
+			<div className="size-full min-h-0 min-w-0 p-3">
+				<PreviewPanel
+					overlayControls={overlayControls}
+					overlayInstances={overlaySource.instances}
+					onOverlayVisibilityChange={setOverlayVisibility}
+				/>
+			</div>
+		);
+	}
 
 	return (
 		<ResizablePanelGroup
