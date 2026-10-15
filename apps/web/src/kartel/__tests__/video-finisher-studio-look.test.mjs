@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { kartelThemeFromSearch, kartelTimelineShare, normalizedKartelTheme } from "../video-finisher-studio-look.ts";
+import { kartelLayoutState, kartelThemeFromSearch, kartelTimelineShare, kartelTimelineShownFromSearch, normalizedKartelTheme } from "../video-finisher-studio-look.ts";
 
 test("the embed takes Studio's theme only when Studio names light or dark", () => {
 	assert.equal(kartelThemeFromSearch("?kartel_nonce=n&kartel_theme=light"), "light");
@@ -22,4 +22,18 @@ test("the compact timeline is as tall as its lanes, from the frame's height now"
 	assert.equal(kartelTimelineShare({ lanePixels: 900, frameHeight: 600 }), 62);
 	// Before the frame has a height the old 36% default holds.
 	assert.equal(kartelTimelineShare({ lanePixels: 71, frameHeight: 0 }), 36);
+});
+
+test("the embed opens as the picture alone only when Studio hides the timeline (RS-313)", () => {
+	assert.equal(kartelTimelineShownFromSearch("?kartel_layout=compact&kartel_timeline=hidden"), false);
+	assert.equal(kartelTimelineShownFromSearch("?kartel_layout=compact"), true);
+	assert.equal(kartelTimelineShownFromSearch("?kartel_timeline=shown"), true);
+});
+
+test("SET_LAYOUT names stage, compact or full; anything else is refused (RS-313)", () => {
+	assert.deepEqual(kartelLayoutState("stage"), { compact: true, timeline: false });
+	assert.deepEqual(kartelLayoutState("compact"), { compact: true, timeline: true });
+	assert.deepEqual(kartelLayoutState("full"), { compact: false, timeline: true });
+	assert.equal(kartelLayoutState("preview"), null);
+	assert.equal(kartelLayoutState(undefined), null);
 });
