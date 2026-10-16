@@ -26,7 +26,10 @@ export class MediaManager {
 			id: asset.id ?? generateUUID(),
 		};
 
-		this.assets = [...this.assets, newAsset];
+		// A take placed again after it was discarded comes back with its own id; it replaces the entry
+		// it left in the list instead of listing the same media twice (RS-334).
+		const previous = this.assets.find((item) => item.id === newAsset.id) ?? null;
+		this.assets = [...this.assets.filter((item) => item.id !== newAsset.id), newAsset];
 		this.notify();
 
 		try {
@@ -38,6 +41,7 @@ export class MediaManager {
 		} catch (error) {
 			console.error("Failed to save media asset:", error);
 			this.assets = this.assets.filter((asset) => asset.id !== newAsset.id);
+			if (previous) this.assets = [...this.assets, previous];
 			this.notify();
 
 			if (storageService.isQuotaExceededError({ error })) {

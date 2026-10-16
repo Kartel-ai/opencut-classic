@@ -5,7 +5,7 @@ import {
 } from "../video-finisher-take-fit.ts";
 
 test("the editor advertises take fits and clip export", () => {
-	assert.deepEqual([...VIDEO_FINISHER_EDITOR_CAPABILITIES], ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement", "stage-layout", "sound-mix"]);
+	assert.deepEqual([...VIDEO_FINISHER_EDITOR_CAPABILITIES], ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement", "stage-layout", "sound-mix", "seek-in-clip"]);
 });
 
 test("a fit is optional, and a sent fit must stay within a small retime", () => {
