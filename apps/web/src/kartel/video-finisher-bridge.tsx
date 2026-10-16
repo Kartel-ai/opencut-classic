@@ -1421,9 +1421,14 @@ export function KartelVideoFinisherBridge({
 				if (found) break;
 			}
 			if (!found) throw new Error("No clip starts at that point in this project revision.");
-			editor.selection.setSelectedElements({ elements: [{ trackId: found.track.id, elementId: found.element.id }] });
+			// RS-334: a time inside the clip (Studio's timeline, scrubbed or pressed) parks the playhead
+			// there; a clip's own start parks on its start as before. The playhead moves before the
+			// selection so Studio has the new time when the selection arrives, and does not bring the
+			// preview back to the clip's start (DF-049c's follow).
+			const into = request.sourceSeconds === null ? 0 : Math.max(0, request.sourceSeconds - breakdownSourceRange(found.element).startSeconds);
 			editor.playback.pause();
-			editor.playback.seek({ time: found.element.startTime });
+			editor.playback.seek({ time: into > 0.011 ? addMediaTime({ a: found.element.startTime, b: mediaTimeFromSeconds({ seconds: into }) }) : found.element.startTime });
+			editor.selection.setSelectedElements({ elements: [{ trackId: found.track.id, elementId: found.element.id }] });
 			identityRef.current = message;
 			post({
 				type: "RANGE_SELECTED",
