@@ -456,6 +456,7 @@ export function normalizedRangeSelection(value: unknown): RangeSelection | null 
 	const startSeconds = value.startSeconds === undefined || value.startSeconds === null ? null : Number(value.startSeconds);
 	const sourceSeconds = value.sourceSeconds === undefined || value.sourceSeconds === null ? null : Number(value.sourceSeconds);
 	if (value.sourceClock !== undefined && (value.sourceClock !== "physical" || sourceSeconds === null)) return null;
+	if (value.sourceClock === "physical" && value.clipId !== undefined && value.clipId !== null && clipId === null) return null;
 	if (startSeconds !== null && (!Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 6 * 60 * 60)) return null;
 	if (sourceSeconds !== null && (!Number.isFinite(sourceSeconds) || sourceSeconds < 0 || sourceSeconds > 6 * 60 * 60 || startSeconds !== null)) return null;
 	if (!clipId && startSeconds === null && sourceSeconds === null) return null;

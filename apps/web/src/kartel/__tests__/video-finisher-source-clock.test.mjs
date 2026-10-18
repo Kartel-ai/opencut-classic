@@ -47,6 +47,7 @@ for (const rate of [0.5, 0.85, 1, 1.15, 2]) test(`production SELECT_RANGE handle
 test("physical source selection guards clip identity, boundaries and unknown markers before any write", async () => {
   for (const payload of [
     { sourceSeconds: 6, sourceClock: "timeline" }, { sourceSeconds: 6, sourceClock: null }, { clipId: "piece", sourceClock: "physical" },
+    ...["", 2, "x".repeat(161)].map((clipId) => ({ clipId, sourceSeconds: 10, sourceClock: "physical" })),
     { clipId: "piece", sourceSeconds: 5, sourceClock: "physical" }, { clipId: "piece", sourceSeconds: 14, sourceClock: "physical" },
     { clipId: "piece", sourceSeconds: NaN, sourceClock: "physical" }, { clipId: "missing", sourceSeconds: 10, sourceClock: "physical" },
   ]) {

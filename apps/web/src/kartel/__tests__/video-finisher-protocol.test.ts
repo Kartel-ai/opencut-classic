@@ -295,6 +295,7 @@ describe("normalizedRangeSelection", () => {
 		expect(normalizedRangeSelection({ sourceSeconds: 10, sourceClock: "physical" })).toEqual({ clipId: null, startSeconds: null, sourceSeconds: 10, sourceClock: "physical" });
 		for (const sourceClock of ["timeline", "source", null, 1]) expect(normalizedRangeSelection({ sourceSeconds: 10, sourceClock })).toBeNull();
 		expect(normalizedRangeSelection({ clipId: "clip-2", sourceClock: "physical" })).toBeNull();
+		for (const clipId of ["", 2, "x".repeat(161)]) expect(normalizedRangeSelection({ clipId, sourceSeconds: 10, sourceClock: "physical" })).toBeNull();
 		expect(normalizedRangeSelection({})).toBeNull();
 	});
 });
