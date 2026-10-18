@@ -1,0 +1,24 @@
+# Finisher physical source selection
+
+Application source: `f79175c4b8698194afefc87a64fa7c36873811a3`, based on served DEV branch `claude/vf-one-timeline-rs334-20261016` at `f209df8d38590e416fc796765c3e05a0ec0b776e` (the same tree as `87b6d1c3431f286a454872a6aff5ba1acc0fdf91`). This receipt is a later documentation commit; it does not change the tested application identity.
+
+A retimed, trimmed source piece previously interpreted a physical source offset as timeline seconds. In the concrete 2x case, source 10 s inside a piece at timeline 20–24 s with source range 6–14 s sought 24 s instead of 22 s. The paired Studio ruler also used an unscaled offset, which could conceal the editor error.
+
+The editor advertises `source-clock-seek` and converts only requests explicitly marked `sourceClock: "physical"` using its existing retime conversion. Unmarked requests retain the exact legacy seek expression, so an editor-first rollout preserves older-host behavior. The paired Studio host sends physical points to the new capability and adapts old `seek-in-clip` requests only with a valid exact clip ID. This is a point-selection repair; fits, edits, exports, media identities, startup/preparation and paid behavior are unchanged.
+
+Marked requests reject unknown clock names, explicitly malformed IDs, a source point outside the chosen clip and unrelated source media before playback or selection writes. Null/omitted IDs still support physical source-only selection. First points and last interior frames remain selectable; an exclusive clip endpoint refuses.
+
+## Verification
+
+- All 31 pure editor contracts passed, including executing the actual production normalizer, source/retime helpers and `SELECT_RANGE` handler with synthetic editor dependencies. Cases cover 0.5x, 0.85x, 1x, 1.15x and 2x, source-only and exact-clip paths, both rollout orders, first/last points and refusal before writes. The existing capability-array assertion remains exact, with only the new capability added; fit/trim/size bounds remain unchanged.
+- The full unchanged `node ../../node_modules/next/dist/bin/next build` passed separately for stage and DEV Studio origins at the same application source. Both verified all 1,186 raw immutable tracked blobs and emitted 75 static files. All 75 files per environment were checked against raw recorded hashes and lengths. The browser chunks contain the new capability/marker, `f79175c4` source stamp and the corresponding isolated origin.
+- Local builds used Node 24.16.0 and copied matching local dependencies without an install or package/lock change. The unchanged Dockerfile's Node 22 runtime and Bun 1.2.18 frozen install still need hosted deployment verification after approval.
+- The paired Studio host passed 19 focused tests, its frozen full 9,896-test suite (9,869 pass, 27 skipped, zero failures), lint/maintainability, canonical stage-config build/performance and the unchanged 700-file packaged probe. Painted local checks of the real Studio timeline at 1280x720 and 1920x1080 showed the midpoint at 22 s in light/dark and after reload; 2x and 0.85x requests retained their exact physical source points, and End selected the final clip's start. This is synthetic host interaction, not mounted/authenticated OpenCut acceptance.
+
+The baseline build reached TypeScript but failed Bun ambient declarations under locked TypeScript 6.0.3. An additive `types: ["bun"]` in `apps/web/tsconfig.json` restores the already-declared package. The complete compiler gate then passed; no ignore, exclusion, compiler version or test policy changed. A first DEV build with generated stage output inside the source tree was excluded because it polluted Tailwind scanning. Both outputs were preserved outside the source tree, and a clean DEV build passed without those CSS warnings. Earlier missing-history, font/IPC, fixture and diagnostic failures remain preserved rather than being counted as passing evidence.
+
+Evidence is retained in Kartel Studio's ignored `tmp/release-launch-20261017/finisher-source-clock/`: full build logs and proofs, raw paired-build verification, frozen host tests/builds and local painted screenshots. The original editor checkout/builds were preserved; the fresh clone verified 1,181 unaffected baseline blobs before transferring only the five owned files.
+
+## Publication limits
+
+This DEV-targeted PR does not activate the manual Railway editor service. Public commit stamp/configuration and manual DEV editor deployment remain held for Elliot's concrete approval. Stage promotion remains subject to the complete release candidate and the existing stage approval. Main and production are untouched. No schema/data change, provider call, paid job, credential operation, new browser profile, startup/reload comparison or owner contact occurred. Authenticated stage sign-in was explicitly deferred; client-role isolation and the independent Finisher comparison remain separate acceptance limits.
