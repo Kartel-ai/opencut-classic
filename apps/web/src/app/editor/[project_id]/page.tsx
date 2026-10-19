@@ -105,6 +105,8 @@ function EditorLayout() {
 	// switch brings OpenCut's assets and properties panels back.
 	const kartelCompact = useKartelLayout((state) => state.compact);
 	const kartelTimelineShown = useKartelLayout((state) => state.timeline);
+	// RS-366: with Studio's timeline head as the transport, the stage picture fills the frame.
+	const kartelTransportHidden = useKartelLayout((state) => state.transportHidden);
 	const activeScene = useEditor((editor) =>
 		editor.scenes.getActiveSceneOrNull(),
 	);
@@ -181,7 +183,7 @@ function EditorLayout() {
 	// RS-313: the stage layout is the picture alone; Studio draws the shots under it.
 	if (kartelCompact && !kartelTimelineShown) {
 		return (
-			<div className="size-full min-h-0 min-w-0 p-3">
+			<div className={kartelTransportHidden ? "size-full min-h-0 min-w-0" : "size-full min-h-0 min-w-0 p-3"}>
 				<PreviewPanel
 					overlayControls={overlayControls}
 					overlayInstances={overlaySource.instances}
