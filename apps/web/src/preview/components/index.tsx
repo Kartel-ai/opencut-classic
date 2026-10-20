@@ -20,6 +20,8 @@ import type {
 } from "@/preview/overlays";
 import { PreviewContextMenu } from "./context-menu";
 import { PreviewToolbar } from "./toolbar";
+import { useKartelLayout } from "@/kartel/video-finisher-layout";
+import { kartelPreviewToolbarShown } from "@/kartel/video-finisher-studio-look";
 import {
 	PreviewViewportProvider,
 	usePreviewViewportState,
@@ -148,6 +150,8 @@ function PreviewCanvas({
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
+	// RS-366: in Studio's stage layout the room's timeline head is the transport.
+	const toolbarShown = useKartelLayout((state) => kartelPreviewToolbarShown(state));
 	const renderTree = useEditor((e) => e.renderer.getRenderTree());
 	const viewport = usePreviewViewportState({
 		canvasHeight: nativeHeight,
@@ -330,7 +334,7 @@ function PreviewCanvas({
 	return (
 		<PreviewViewportProvider value={viewport}>
 			<div className="flex size-full min-h-0 min-w-0 flex-col">
-				<div className="flex min-h-0 min-w-0 flex-1 p-2 pb-0">
+				<div className={toolbarShown ? "flex min-h-0 min-w-0 flex-1 p-2 pb-0" : "flex min-h-0 min-w-0 flex-1"}>
 					<ContextMenu>
 						<ContextMenuTrigger asChild>
 							<div
@@ -370,7 +374,7 @@ function PreviewCanvas({
 						/>
 					</ContextMenu>
 				</div>
-				<PreviewToolbar onToggleFullscreen={onToggleFullscreen} />
+				{toolbarShown ? <PreviewToolbar onToggleFullscreen={onToggleFullscreen} /> : null}
 			</div>
 		</PreviewViewportProvider>
 	);

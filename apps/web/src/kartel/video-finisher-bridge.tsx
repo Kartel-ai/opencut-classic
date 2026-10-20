@@ -60,7 +60,7 @@ import {
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 import { createProjectLoadQueue, createProjectMediaForHost, requireProjectMedia } from "./video-finisher-media";
 import { clearKartelClipFrames } from "./video-finisher-clip-thumbnail";
-import { kartelLayoutState, normalizedKartelTheme } from "./video-finisher-studio-look";
+import { kartelLayoutState, normalizedKartelTheme, normalizedKartelTransport } from "./video-finisher-studio-look";
 import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
 import type { Command, CommandResult } from "@/commands/base-command";
@@ -1582,6 +1582,16 @@ export function KartelVideoFinisherBridge({
 			post({ type: "LAYOUT_SET", identity: message, payload: { layout } });
 		};
 
+		// RS-366: Studio's timeline head plays and pauses the editor; the playhead streams back as usual.
+		const transport = async (message: VideoFinisherHostMessage) => {
+			const action = normalizedKartelTransport(isRecord(message.payload) ? message.payload.action : undefined);
+			if (!action) throw new Error("Unknown transport action.");
+			if (action === "play") editor.playback.play();
+			else if (action === "pause") editor.playback.pause();
+			else editor.playback.toggle();
+			post({ type: "TRANSPORT_SET", identity: message, payload: { action, playing: editor.playback.getIsPlaying() } });
+		};
+
 		// RS-067: the seat's free timeline edits. The list runs as one OpenCut snapshot command; the
 		// token names that command so the reply's Undo reverses exactly it, and only while it is
 		// still the latest step (OpenCut's own undo reverses the same step).
@@ -1660,6 +1670,8 @@ export function KartelVideoFinisherBridge({
 																	? undoEdits(message)
 																	: message.type === "EXPORT_CLIP"
 																		? exportClip(message)
+																		: message.type === "TRANSPORT"
+																			? transport(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -1678,7 +1690,7 @@ export function KartelVideoFinisherBridge({
 												? "BREAKDOWN_FAILED"
 												: message.type === "SELECT_RANGE"
 													? "SELECT_FAILED"
-													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS"].includes(message.type)
+													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS", "TRANSPORT"].includes(message.type)
 														? "EDITS_FAILED"
 														: message.type === "EXPORT_CLIP"
 															? "CLIP_FAILED"
