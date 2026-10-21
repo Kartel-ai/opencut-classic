@@ -19,6 +19,7 @@ import {
 	normalizedPreviewRange,
 	normalizedRangeSelection,
 	normalizedRepairInsertion,
+	rangeSelectionTimelineSeconds,
 	repairMediaId,
 	repairPreviewUpdate,
 	sourceFile,
@@ -291,6 +292,10 @@ describe("normalizedRangeSelection", () => {
 		expect(normalizedRangeSelection({ sourceSeconds: 8, startSeconds: 3 })).toBeNull();
 		expect(normalizedRangeSelection({ sourceSeconds: -1 })).toBeNull();
 		expect(normalizedRangeSelection({ startSeconds: -1 })).toBeNull();
+		expect(normalizedRangeSelection({ sourceSeconds: 10, sourceClock: "physical" })).toEqual({ clipId: null, startSeconds: null, sourceSeconds: 10, sourceClock: "physical" });
+		for (const sourceClock of ["timeline", "source", null, 1]) expect(normalizedRangeSelection({ sourceSeconds: 10, sourceClock })).toBeNull();
+		expect(normalizedRangeSelection({ clipId: "clip-2", sourceClock: "physical" })).toBeNull();
+		for (const clipId of ["", 2, "x".repeat(161)]) expect(normalizedRangeSelection({ clipId, sourceSeconds: 10, sourceClock: "physical" })).toBeNull();
 		expect(normalizedRangeSelection({})).toBeNull();
 	});
 });
@@ -302,6 +307,17 @@ describe("breakdown source and timeline coordinates", () => {
 		startTime: seconds(20), duration: seconds(4), trimStart: seconds(6), trimEnd: seconds(10),
 		params: { volume: 0, muted: false }, retime: { rate: 2 },
 	};
+
+	test("marked physical selection respects retime while unmarked host requests keep their old clock", () => {
+		for (const rate of [0.5, 0.85, 1, 1.15, 2]) {
+			const retimed = { ...piece, retime: { rate } };
+			const physical = 6 + 2 * rate;
+			expect(rangeSelectionTimelineSeconds({ element: retimed, request: { clipId: piece.id, startSeconds: null, sourceSeconds: physical, sourceClock: "physical" } })).toBeCloseTo(22, 8);
+			expect(rangeSelectionTimelineSeconds({ element: retimed, request: { clipId: piece.id, startSeconds: null, sourceSeconds: 8 } })).toBe(22);
+			expect(rangeSelectionTimelineSeconds({ element: retimed, request: { clipId: piece.id, startSeconds: null, sourceSeconds: 6, sourceClock: "physical" } })).toBe(20);
+			for (const point of [5, 6 + 4 * rate, Number.NaN]) expect(rangeSelectionTimelineSeconds({ element: retimed, request: { clipId: piece.id, startSeconds: null, sourceSeconds: point, sourceClock: "physical" } })).toBeNull();
+		}
+	});
 
 	test("maps source cuts through a move, trim and speed change without splitting removed frames", () => {
 		expect(breakdownSourceRange(piece)).toEqual({ startSeconds: 6, endSeconds: 14 });

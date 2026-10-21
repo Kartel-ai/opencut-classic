@@ -20,6 +20,23 @@ export function kartelTimelineShownFromSearch(search: string): boolean {
 	return new URLSearchParams(search).get("kartel_timeline") !== "hidden";
 }
 
+// RS-366 (Elliot, 2026-10-19, approved on the mock): in the stage layout Studio's timeline head is the
+// room's one transport (`kartel_transport=hidden`), so the preview drops its own toolbar and padding.
+// The other layouts keep it: All panels has no Studio timeline beside it.
+export function kartelTransportHiddenFromSearch(search: string): boolean {
+	return new URLSearchParams(search).get("kartel_transport") === "hidden";
+}
+
+export function kartelPreviewToolbarShown({ compact, timeline, transportHidden }: { compact: boolean; timeline: boolean; transportHidden: boolean }): boolean {
+	return !(transportHidden && compact && !timeline);
+}
+
+export type KartelTransportAction = "play" | "pause" | "toggle";
+
+export function normalizedKartelTransport(value: unknown): KartelTransportAction | null {
+	return value === "play" || value === "pause" || value === "toggle" ? value : null;
+}
+
 export function kartelLayoutState(layout: unknown): { compact: boolean; timeline: boolean } | null {
 	if (layout === "stage") return { compact: true, timeline: false };
 	if (layout === "compact") return { compact: true, timeline: true };

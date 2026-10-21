@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { kartelLayoutState, kartelThemeFromSearch, kartelTimelineShare, kartelTimelineShownFromSearch, normalizedKartelTheme } from "../video-finisher-studio-look.ts";
+import { kartelLayoutState, kartelPreviewToolbarShown, kartelThemeFromSearch, kartelTimelineShare, kartelTimelineShownFromSearch, kartelTransportHiddenFromSearch, normalizedKartelTheme, normalizedKartelTransport } from "../video-finisher-studio-look.ts";
 
 test("the embed takes Studio's theme only when Studio names light or dark", () => {
 	assert.equal(kartelThemeFromSearch("?kartel_nonce=n&kartel_theme=light"), "light");
@@ -36,4 +36,23 @@ test("SET_LAYOUT names stage, compact or full; anything else is refused (RS-313)
 	assert.deepEqual(kartelLayoutState("full"), { compact: false, timeline: true });
 	assert.equal(kartelLayoutState("preview"), null);
 	assert.equal(kartelLayoutState(undefined), null);
+});
+
+test("the preview drops its toolbar only in the stage layout when Studio is the transport (RS-366)", () => {
+	assert.equal(kartelTransportHiddenFromSearch("?kartel_layout=compact&kartel_timeline=hidden&kartel_transport=hidden"), true);
+	assert.equal(kartelTransportHiddenFromSearch("?kartel_layout=compact&kartel_timeline=hidden"), false);
+	assert.equal(kartelPreviewToolbarShown({ compact: true, timeline: false, transportHidden: true }), false);
+	// All panels (full) and the compact timeline have no Studio timeline beside them.
+	assert.equal(kartelPreviewToolbarShown({ compact: false, timeline: true, transportHidden: true }), true);
+	assert.equal(kartelPreviewToolbarShown({ compact: true, timeline: true, transportHidden: true }), true);
+	// An older Studio never asks, so the stage keeps its toolbar.
+	assert.equal(kartelPreviewToolbarShown({ compact: true, timeline: false, transportHidden: false }), true);
+});
+
+test("TRANSPORT names play, pause or toggle; anything else is refused (RS-366)", () => {
+	assert.equal(normalizedKartelTransport("play"), "play");
+	assert.equal(normalizedKartelTransport("pause"), "pause");
+	assert.equal(normalizedKartelTransport("toggle"), "toggle");
+	assert.equal(normalizedKartelTransport("stop"), null);
+	assert.equal(normalizedKartelTransport(undefined), null);
 });
