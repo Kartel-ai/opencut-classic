@@ -114,6 +114,9 @@ export type HostProject = {
 		src?: string;
 		mimeType?: string;
 		bytes?: ArrayBuffer;
+		// `source-file`: Studio hands the exact bytes as one Blob, which crosses into this frame by
+		// reference instead of as a copied buffer.
+		file?: Blob;
 		byteSize?: number;
 		sha256?: string;
 	};
@@ -700,19 +703,22 @@ export async function sourceFile(project: HostProject): Promise<File> {
 	const source = project.source;
 	if (!source?.versionId)
 		throw new Error("Studio did not provide an exact playable source version.");
-	if (source.bytes instanceof ArrayBuffer) {
+	const handed = source.file instanceof Blob ? source.file : null;
+	const buffer = source.bytes instanceof ArrayBuffer ? source.bytes : null;
+	if (handed || buffer) {
 		const mimeType = String(source.mimeType ?? "").toLowerCase();
+		const size = handed?.size ?? buffer?.byteLength ?? 0;
 		if (
 			mimeType !== "video/mp4" ||
-			source.bytes.byteLength < 1 ||
-			source.bytes.byteLength > MAX_SOURCE_BYTES ||
+			size < 1 ||
+			size > MAX_SOURCE_BYTES ||
 			!Number.isSafeInteger(source.byteSize) ||
-			source.byteSize !== source.bytes.byteLength ||
+			source.byteSize !== size ||
 			!/^[0-9a-f]{64}$/.test(source.sha256 ?? "")
 		) {
 			throw new Error("The transferred source failed its bounded media identity check.");
 		}
-		const blob = new Blob([source.bytes], { type: mimeType });
+		const blob = handed ?? new Blob(buffer ? [buffer] : [], { type: mimeType });
 		if ((await sha256Hex(blob)) !== source.sha256) {
 			throw new Error("The transferred source checksum changed before OpenCut import.");
 		}

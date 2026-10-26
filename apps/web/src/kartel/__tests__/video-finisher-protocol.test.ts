@@ -166,6 +166,30 @@ describe("sourceFile", () => {
 		await expect(sourceFile({ source: { ...source, sha256: "a".repeat(64) } }))
 			.rejects.toThrow("checksum changed before OpenCut import");
 	});
+
+	test("accepts the exact source handed as one Blob and holds it to the same identity", async () => {
+		const bytes = new TextEncoder().encode("exact private source as a file");
+		const digest = await crypto.subtle.digest("SHA-256", bytes);
+		const sha256 = [...new Uint8Array(digest)]
+			.map((value) => value.toString(16).padStart(2, "0"))
+			.join("");
+		const source = {
+			versionId: "version-1",
+			name: "source.mp4",
+			mimeType: "video/mp4",
+			file: new Blob([bytes], { type: "video/mp4" }),
+			byteSize: bytes.byteLength,
+			sha256,
+		};
+		const file = await sourceFile({ source });
+		expect(file.name).toBe("source.mp4");
+		expect(file.type).toBe("video/mp4");
+		expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
+		await expect(sourceFile({ source: { ...source, byteSize: bytes.byteLength + 1 } }))
+			.rejects.toThrow("bounded media identity check");
+		await expect(sourceFile({ source: { ...source, sha256: "a".repeat(64) } }))
+			.rejects.toThrow("checksum changed before OpenCut import");
+	});
 });
 
 describe("normalizedPreviewRange", () => {
