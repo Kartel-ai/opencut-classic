@@ -66,6 +66,7 @@ import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finis
 import type { Command, CommandResult } from "@/commands/base-command";
 import { canJoinPieces, joinedPiece } from "./video-finisher-join";
 import { soundtrackTracks } from "./video-finisher-soundtrack";
+import { heldMediaFiles, normalizedHeldMediaRequest } from "./video-finisher-held-media";
 
 // DF-049b: one breakdown apply (a split or merge with its names and layers) as one history step.
 // Whichever undo reverses it, Studio's Undo through UNDO_EDITS or OpenCut's own Ctrl+Z inside the
@@ -1633,6 +1634,21 @@ export function KartelVideoFinisherBridge({
 			changed();
 		};
 
+		// 2026-10-27: Studio asks which of this project's exact files the editor already holds and
+		// takes those by reference instead of downloading them again; it checks each one itself.
+		const readHeldMedia = async (message: VideoFinisherHostMessage) => {
+			const files = await heldMediaFiles({
+				items: normalizedHeldMediaRequest(message.payload),
+				assets: editor.media.getAssets(),
+				load: async (id) => {
+					const asset = await storageService.loadMediaAsset({ projectId, id });
+					if (asset?.url) URL.revokeObjectURL(asset.url);
+					return asset?.file ?? null;
+				},
+			});
+			post({ type: "HELD_MEDIA", identity: message, payload: { files } });
+		};
+
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== window.parent || event.origin !== hostOrigin) return;
 			if (!isHostMessage(event.data)) return;
@@ -1678,6 +1694,8 @@ export function KartelVideoFinisherBridge({
 																		? exportClip(message)
 																		: message.type === "TRANSPORT"
 																			? transport(message)
+																		: message.type === "READ_HELD_MEDIA"
+																			? readHeldMedia(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -1700,6 +1718,8 @@ export function KartelVideoFinisherBridge({
 														? "EDITS_FAILED"
 														: message.type === "EXPORT_CLIP"
 															? "CLIP_FAILED"
+														: message.type === "READ_HELD_MEDIA"
+															? "HELD_MEDIA_FAILED"
 											: "EXPORT_FAILED",
 					identity: message,
 					payload: {
