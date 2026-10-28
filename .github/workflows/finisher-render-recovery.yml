@@ -1,0 +1,24 @@
+name: Finisher renderer recovery
+
+on:
+  pull_request:
+    branches: [claude/vf-one-timeline-rs334-20261016]
+  push:
+    branches: [codex/video-finisher-render-recovery-20261027]
+
+jobs:
+  recovery-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: 1.2.18
+      - run: bun install --frozen-lockfile
+      - name: Fatal renderer containment and checkpoint custody
+        run: node --experimental-strip-types --test apps/web/src/services/renderer/compositor/__tests__/renderer-failure.test.mjs apps/web/src/kartel/__tests__/video-finisher-render-recovery.test.mjs
+      - name: Existing retained-media and bridge protocol regressions
+        run: bun test apps/web/src/kartel/__tests__/video-finisher-media-retained.test.ts apps/web/src/kartel/__tests__/video-finisher-protocol.test.ts

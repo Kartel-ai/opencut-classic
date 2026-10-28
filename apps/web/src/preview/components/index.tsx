@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import useDeepCompareEffect from "use-deep-compare-effect";
 import { useEditor } from "@/editor/use-editor";
 import { useRafLoop } from "@/hooks/use-raf-loop";
 import { useContainerSize } from "@/hooks/use-container-size";
 import { useFullscreen } from "@/hooks/use-fullscreen";
 import { CanvasRenderer } from "@/services/renderer/canvas-renderer";
+import { rendererFailure } from "@/services/renderer/compositor/renderer-failure";
 import { playbackPreviewSize } from "@/preview/resolution";
 import { TICKS_PER_SECOND } from "@/wasm";
 import type { RootNode } from "@/services/renderer/nodes/root-node";
@@ -146,12 +154,19 @@ function PreviewCanvas({
 	const lastFrameRef = useRef(-1);
 	const lastSceneRef = useRef<RootNode | null>(null);
 	const renderingRef = useRef(false);
+	const renderFailure = useSyncExternalStore(
+		rendererFailure.subscribe,
+		rendererFailure.getSnapshot,
+		() => null,
+	);
 	const { width: nativeWidth, height: nativeHeight } = usePreviewSize();
 	const viewportSize = useContainerSize({ containerRef: viewportRef });
 	const editor = useEditor();
 	const activeProject = useEditor((e) => e.project.getActive());
 	// RS-366: in Studio's stage layout the room's timeline head is the transport.
-	const toolbarShown = useKartelLayout((state) => kartelPreviewToolbarShown(state));
+	const toolbarShown = useKartelLayout((state) =>
+		kartelPreviewToolbarShown(state),
+	);
 	const renderTree = useEditor((e) => e.renderer.getRenderTree());
 	const viewport = usePreviewViewportState({
 		canvasHeight: nativeHeight,
@@ -176,7 +191,13 @@ function PreviewCanvas({
 	useEffect(() => {
 		const mount = canvasMountRef.current;
 		if (!mount) return;
-		const outputCanvas = renderer.getOutputCanvas();
+		let outputCanvas: HTMLCanvasElement;
+		try {
+			outputCanvas = renderer.getOutputCanvas();
+		} catch (error) {
+			console.error("Preview initialization failed:", error);
+			return;
+		}
 		outputCanvas.style.display = "block";
 		outputCanvas.style.width = "100%";
 		outputCanvas.style.height = "100%";
@@ -189,7 +210,8 @@ function PreviewCanvas({
 	}, [renderer]);
 
 	const render = useCallback(() => {
-		if (!renderTree || renderingRef.current) return;
+		if (!renderTree || renderingRef.current || rendererFailure.getSnapshot())
+			return;
 		if (editor.project.getExportState().isExporting) {
 			lastFrameRef.current = -1;
 			return;
@@ -334,13 +356,27 @@ function PreviewCanvas({
 	return (
 		<PreviewViewportProvider value={viewport}>
 			<div className="flex size-full min-h-0 min-w-0 flex-col">
-				<div className={toolbarShown ? "flex min-h-0 min-w-0 flex-1 p-2 pb-0" : "flex min-h-0 min-w-0 flex-1"}>
+				<div
+					className={
+						toolbarShown
+							? "flex min-h-0 min-w-0 flex-1 p-2 pb-0"
+							: "flex min-h-0 min-w-0 flex-1"
+					}
+				>
 					<ContextMenu>
 						<ContextMenuTrigger asChild>
 							<div
 								ref={viewportRef}
 								className="relative flex size-full min-h-0 min-w-0 items-center justify-center overflow-hidden"
 							>
+								{renderFailure ? (
+									<div
+										role="alert"
+										className="absolute inset-0 z-50 flex items-center justify-center bg-background p-6 text-center text-sm"
+									>
+										{renderFailure.message}
+									</div>
+								) : null}
 								<div
 									ref={canvasMountRef}
 									className="absolute block border"
@@ -374,7 +410,9 @@ function PreviewCanvas({
 						/>
 					</ContextMenu>
 				</div>
-				{toolbarShown ? <PreviewToolbar onToggleFullscreen={onToggleFullscreen} /> : null}
+				{toolbarShown ? (
+					<PreviewToolbar onToggleFullscreen={onToggleFullscreen} />
+				) : null}
 			</div>
 		</PreviewViewportProvider>
 	);
