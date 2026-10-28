@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { isKartelVideoFinisherRoute } from "./video-finisher-protocol";
-import { kartelThemeFromSearch, kartelTimelineShownFromSearch, type KartelTheme } from "./video-finisher-studio-look";
+import { kartelThemeFromSearch, kartelTimelineShownFromSearch, kartelTransportHiddenFromSearch, type KartelTheme } from "./video-finisher-studio-look";
 
 // RS-067 mock: inside Studio the editor opens as preview and timeline only. The host switches to
 // OpenCut's full panels (assets and properties) through SET_LAYOUT from its Advanced control.
@@ -25,6 +25,8 @@ type KartelLayoutState = {
 	embedded: boolean;
 	// RS-283: Studio's theme, from kartel_theme at open and SET_LAYOUT after; null keeps OpenCut's.
 	theme: KartelTheme | null;
+	// RS-366: Studio's timeline head plays and pauses the stage, so the preview has no toolbar there.
+	transportHidden: boolean;
 	setCompact: (compact: boolean) => void;
 	setTimeline: (timeline: boolean) => void;
 	setTheme: (theme: KartelTheme) => void;
@@ -47,6 +49,7 @@ export const useKartelLayout = create<KartelLayoutState>((set) => ({
 	timeline: typeof window === "undefined" ? true : kartelTimelineShownFromSearch(window.location.search),
 	embedded: isKartelEmbedded(),
 	theme: typeof window === "undefined" ? null : kartelThemeFromSearch(window.location.search),
+	transportHidden: typeof window === "undefined" ? false : kartelTransportHiddenFromSearch(window.location.search),
 	setCompact: (compact) => set({ compact }),
 	setTimeline: (timeline) => set({ timeline }),
 	setTheme: (theme) => set({ theme }),

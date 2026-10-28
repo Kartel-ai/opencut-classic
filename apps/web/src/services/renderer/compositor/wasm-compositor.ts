@@ -18,6 +18,7 @@ import type {
 	RenderedTextureDescriptor,
 	TextureUploadDescriptor,
 } from "./types";
+import { rendererFailure } from "./renderer-failure";
 
 /**
  * One slot in the derived-texture cache. The OffscreenCanvas is persistent —
@@ -54,9 +55,10 @@ class WasmCompositor {
 		height: number;
 		resize?: boolean;
 	}) {
+		rendererFailure.run(() => {});
 		if (!this.canvas) {
-			initCompositor(width, height);
-			this.canvas = getCompositorCanvas();
+			rendererFailure.run(() => initCompositor(width, height));
+			this.canvas = rendererFailure.run(() => getCompositorCanvas());
 			this.initializedSize = { width, height };
 			return;
 		}
@@ -67,7 +69,7 @@ class WasmCompositor {
 				this.initializedSize.width !== width ||
 				this.initializedSize.height !== height)
 		) {
-			resizeCompositor(width, height);
+			rendererFailure.run(() => resizeCompositor(width, height));
 			this.initializedSize = { width, height };
 		}
 	}
@@ -83,7 +85,7 @@ class WasmCompositor {
 		const nextIds = new Set(textures.map((texture) => texture.id));
 		for (const previousId of this.cache.keys()) {
 			if (!nextIds.has(previousId)) {
-				releaseTexture(previousId);
+				rendererFailure.run(() => releaseTexture(previousId));
 				this.cache.delete(previousId);
 			}
 		}
@@ -98,7 +100,7 @@ class WasmCompositor {
 	}
 
 	render(frame: FrameDescriptor) {
-		renderFrame(frame);
+		rendererFailure.run(() => renderFrame(frame));
 		if (isRenderPerfEnabled()) {
 			const profile: unknown = getLastFrameProfile();
 			if (Array.isArray(profile)) {
@@ -137,17 +139,22 @@ class WasmCompositor {
 			name: "textureUploadPixels",
 			by: texture.width * texture.height,
 		});
-		uploadTexture({
-			id: texture.id,
-			source: ensureOffscreenCanvas({
-				source: texture.source,
-				width: texture.width,
-				height: texture.height,
-				label: `texture upload ${texture.id}`,
-			}),
+		// Browser decoding/canvas conversion can fail transiently before WASM is
+		// entered. Only a failure at the compositor boundary poisons its instance.
+		const source = ensureOffscreenCanvas({
+			source: texture.source,
 			width: texture.width,
 			height: texture.height,
+			label: `texture upload ${texture.id}`,
 		});
+		rendererFailure.run(() =>
+			uploadTexture({
+				id: texture.id,
+				source,
+				width: texture.width,
+				height: texture.height,
+			}),
+		);
 		this.cache.set(texture.id, {
 			kind: "external",
 			source: texture.source,
@@ -191,12 +198,14 @@ class WasmCompositor {
 			name: "textureUploadPixels",
 			by: texture.width * texture.height,
 		});
-		uploadTexture({
-			id: texture.id,
-			source: canvas,
-			width: texture.width,
-			height: texture.height,
-		});
+		rendererFailure.run(() =>
+			uploadTexture({
+				id: texture.id,
+				source: canvas,
+				width: texture.width,
+				height: texture.height,
+			}),
+		);
 		this.cache.set(texture.id, {
 			kind: "rendered",
 			canvas,

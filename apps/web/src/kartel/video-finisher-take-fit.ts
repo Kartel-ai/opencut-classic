@@ -6,8 +6,10 @@
 // PROJECT_LOADED and sends a fit or asks for a clip only when the editor advertises it.
 // RS-313: `stage-layout` is the picture alone (Studio draws the shots), from `kartel_timeline=hidden`
 // at open and the `stage` layout of SET_LAYOUT after. RS-324: `sound-mix` keeps an effects-only take
-// beside the dialogue and music layers, and lets levels and mute reach its Effects track.
-export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement", "stage-layout", "sound-mix"] as const;
+// beside the dialogue and music layers, and lets levels and mute reach its Effects track. RS-334:
+// `seek-in-clip` keeps its legacy offset clock. `source-clock-seek` accepts explicitly marked
+// physical source seconds, including retime, without changing an older host's requests.
+export const VIDEO_FINISHER_EDITOR_CAPABILITIES = ["take-fit", "clip-export", "take-clip-export", "soundtrack-replacement", "stage-layout", "sound-mix", "seek-in-clip", "source-clock-seek", "transport", "source-file", "held-media"] as const;
 
 // A fit may retime a take a little so a window of it fills the shot; more reads as slow motion
 // or a skip.

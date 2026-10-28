@@ -40,6 +40,12 @@ export function EditorProvider({
 	useEffect(() => {
 		let cancelled = false;
 		const editor = EditorCore.getInstance();
+		// The standalone editor warms the font picker's atlas (about 2 MB of glyph images) as soon as a
+		// project opens. Inside Kartel Studio the text panels are closed at first, so the picker loads
+		// the atlas when it is opened and the room's first load does not download it.
+		const preloadFonts = () => {
+			if (!preserveProjectId) loadFontAtlas();
+		};
 
 		const loadProject = async () => {
 			try {
@@ -51,7 +57,7 @@ export function EditorProvider({
 				if (cancelled) return;
 
 				setIsLoading(false);
-				loadFontAtlas();
+				preloadFonts();
 			} catch (err) {
 				if (cancelled) return;
 
@@ -68,7 +74,7 @@ export function EditorProvider({
 						});
 						if (preserveProjectId) {
 							setIsLoading(false);
-							loadFontAtlas();
+							preloadFonts();
 						} else {
 							router.replace(`/editor/${newProjectId}`);
 						}

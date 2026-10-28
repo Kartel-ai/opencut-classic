@@ -60,12 +60,14 @@ import {
 import type { VideoFinisherHostMessage } from "./video-finisher-protocol";
 import { createProjectLoadQueue, createProjectMediaForHost, requireProjectMedia } from "./video-finisher-media";
 import { clearKartelClipFrames } from "./video-finisher-clip-thumbnail";
-import { kartelLayoutState, normalizedKartelTheme } from "./video-finisher-studio-look";
+import { kartelLayoutState, normalizedKartelTheme, normalizedKartelTransport } from "./video-finisher-studio-look";
 import { useKartelLayout } from "./video-finisher-layout";
 import { applyKartelTimelineEdits, normalizedTimelineEdits } from "./video-finisher-timeline-edits";
 import type { Command, CommandResult } from "@/commands/base-command";
 import { canJoinPieces, joinedPiece } from "./video-finisher-join";
 import { soundtrackTracks } from "./video-finisher-soundtrack";
+import { heldMediaFiles, normalizedHeldMediaRequest } from "./video-finisher-held-media";
+import { rendererFailure } from "@/services/renderer/compositor/renderer-failure";
 
 // DF-049b: one breakdown apply (a split or merge with its names and layers) as one history step.
 // Whichever undo reverses it, Studio's Undo through UNDO_EDITS or OpenCut's own Ctrl+Z inside the
@@ -114,6 +116,9 @@ export type HostProject = {
 		src?: string;
 		mimeType?: string;
 		bytes?: ArrayBuffer;
+		// `source-file`: Studio hands the exact bytes as one Blob, which crosses into this frame by
+		// reference instead of as a copied buffer.
+		file?: Blob;
 		byteSize?: number;
 		sha256?: string;
 	};
@@ -448,17 +453,32 @@ function findBreakdownStemElement({ tracks, mediaId, piece }: { tracks: readonly
 
 // Exact clip selection stays authoritative. Source coordinates never fall back to
 // an unrelated clip at the same timeline position.
-export type RangeSelection = { clipId: string | null; startSeconds: number | null; sourceSeconds: number | null };
+export type RangeSelection = { clipId: string | null; startSeconds: number | null; sourceSeconds: number | null; sourceClock?: "physical" };
 
 export function normalizedRangeSelection(value: unknown): RangeSelection | null {
 	if (!isRecord(value)) return null;
 	const clipId = typeof value.clipId === "string" && value.clipId.length >= 1 && value.clipId.length <= 160 ? value.clipId : null;
 	const startSeconds = value.startSeconds === undefined || value.startSeconds === null ? null : Number(value.startSeconds);
 	const sourceSeconds = value.sourceSeconds === undefined || value.sourceSeconds === null ? null : Number(value.sourceSeconds);
+	if (value.sourceClock !== undefined && (value.sourceClock !== "physical" || sourceSeconds === null)) return null;
+	if (value.sourceClock === "physical" && value.clipId !== undefined && value.clipId !== null && clipId === null) return null;
 	if (startSeconds !== null && (!Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 6 * 60 * 60)) return null;
 	if (sourceSeconds !== null && (!Number.isFinite(sourceSeconds) || sourceSeconds < 0 || sourceSeconds > 6 * 60 * 60 || startSeconds !== null)) return null;
 	if (!clipId && startSeconds === null && sourceSeconds === null) return null;
-	return { clipId, startSeconds, sourceSeconds };
+	return { clipId, startSeconds, sourceSeconds, ...(value.sourceClock === "physical" ? { sourceClock: "physical" as const } : {}) };
+}
+
+export function rangeSelectionTimelineSeconds({ element, request }: { element: TimelineElement; request: RangeSelection }): number | null {
+	const start = mediaTimeToSeconds({ time: element.startTime });
+	if (request.sourceSeconds === null) return start;
+	const range = breakdownSourceRange(element);
+	let into = Math.max(0, request.sourceSeconds - range.startSeconds);
+	if (request.sourceClock === "physical") {
+		if (!Number.isFinite(request.sourceSeconds) || request.sourceSeconds < range.startSeconds - 0.011 || request.sourceSeconds >= range.endSeconds - 0.011) return null;
+		into = getClipTimeAtSourceTime({ sourceTime: into, retime: "retime" in element ? element.retime : undefined });
+		if (!Number.isFinite(into) || into < 0 || into >= mediaTimeToSeconds({ time: element.duration })) return null;
+	}
+	return start + (into > 0.011 ? into : 0);
 }
 
 export function studioOrigin(
@@ -685,19 +705,22 @@ export async function sourceFile(project: HostProject): Promise<File> {
 	const source = project.source;
 	if (!source?.versionId)
 		throw new Error("Studio did not provide an exact playable source version.");
-	if (source.bytes instanceof ArrayBuffer) {
+	const handed = source.file instanceof Blob ? source.file : null;
+	const buffer = source.bytes instanceof ArrayBuffer ? source.bytes : null;
+	if (handed || buffer) {
 		const mimeType = String(source.mimeType ?? "").toLowerCase();
+		const size = handed?.size ?? buffer?.byteLength ?? 0;
 		if (
 			mimeType !== "video/mp4" ||
-			source.bytes.byteLength < 1 ||
-			source.bytes.byteLength > MAX_SOURCE_BYTES ||
+			size < 1 ||
+			size > MAX_SOURCE_BYTES ||
 			!Number.isSafeInteger(source.byteSize) ||
-			source.byteSize !== source.bytes.byteLength ||
+			source.byteSize !== size ||
 			!/^[0-9a-f]{64}$/.test(source.sha256 ?? "")
 		) {
 			throw new Error("The transferred source failed its bounded media identity check.");
 		}
-		const blob = new Blob([source.bytes], { type: mimeType });
+		const blob = handed ?? new Blob(buffer ? [buffer] : [], { type: mimeType });
 		if ((await sha256Hex(blob)) !== source.sha256) {
 			throw new Error("The transferred source checksum changed before OpenCut import.");
 		}
@@ -912,6 +935,10 @@ export function KartelVideoFinisherBridge({
 						capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES],
 					},
 				});
+				// An initialization trap can precede the first host request, when
+				// only revision 0 is known. Report it with this accepted LOAD identity
+				// so a saved cut's host can offer recovery without weakening validation.
+				renderFailed();
 			} finally {
 				applyingRef.current = false;
 			}
@@ -997,7 +1024,7 @@ export function KartelVideoFinisherBridge({
 				if (insertion.semanticRole === "mix_preview") {
 					if (element.type !== "audio") throw new Error("The new soundtrack is not audio.");
 					if (Math.abs(Number(created.duration) - targetDuration) > 0.01) throw new Error("The new soundtrack does not match the original picture clock.");
-					const before = structuredClone(activeScene.tracks);
+					const before = activeScene.tracks;
 					const mix = isRecord(message.payload) && message.payload.mix === "effects" ? "effects" : undefined;
 					const after = soundtrackTracks({ tracks: before, element: { ...element, id: `sound-element-${message.operationId}` }, trackId: `sound-${message.operationId}`, mix });
 					editor.command.execute({ command: new TracksSnapshotCommand({ before, after }) });
@@ -1421,9 +1448,20 @@ export function KartelVideoFinisherBridge({
 				if (found) break;
 			}
 			if (!found) throw new Error("No clip starts at that point in this project revision.");
-			editor.selection.setSelectedElements({ elements: [{ trackId: found.track.id, elementId: found.element.id }] });
+			// RS-334: a time inside the clip (Studio's timeline, scrubbed or pressed) parks the playhead
+			// there; a clip's own start parks on its start as before. The playhead moves before the
+			// selection so Studio has the new time when the selection arrives, and does not bring the
+			// preview back to the clip's start (DF-049c's follow).
+			if (request.sourceClock === "physical" && (found.element.type !== "video" || found.element.mediaId !== sourceMediaIdRef.current)) throw new Error("That clip does not use the original source clock.");
+			const timelineSeconds = rangeSelectionTimelineSeconds({ element: found.element, request });
+			if (timelineSeconds === null) throw new Error("That source point is outside the selected clip.");
+			const into = request.sourceSeconds === null ? 0 : Math.max(0, request.sourceSeconds - breakdownSourceRange(found.element).startSeconds);
+			const seekTime = request.sourceClock === "physical"
+				? mediaTimeFromSeconds({ seconds: timelineSeconds })
+				: into > 0.011 ? addMediaTime({ a: found.element.startTime, b: mediaTimeFromSeconds({ seconds: into }) }) : found.element.startTime;
 			editor.playback.pause();
-			editor.playback.seek({ time: found.element.startTime });
+			editor.playback.seek({ time: seekTime });
+			editor.selection.setSelectedElements({ elements: [{ trackId: found.track.id, elementId: found.element.id }] });
 			identityRef.current = message;
 			post({
 				type: "RANGE_SELECTED",
@@ -1556,6 +1594,16 @@ export function KartelVideoFinisherBridge({
 			post({ type: "LAYOUT_SET", identity: message, payload: { layout } });
 		};
 
+		// RS-366: Studio's timeline head plays and pauses the editor; the playhead streams back as usual.
+		const transport = async (message: VideoFinisherHostMessage) => {
+			const action = normalizedKartelTransport(isRecord(message.payload) ? message.payload.action : undefined);
+			if (!action) throw new Error("Unknown transport action.");
+			if (action === "play") editor.playback.play();
+			else if (action === "pause") editor.playback.pause();
+			else editor.playback.toggle();
+			post({ type: "TRANSPORT_SET", identity: message, payload: { action, playing: editor.playback.getIsPlaying() } });
+		};
+
 		// RS-067: the seat's free timeline edits. The list runs as one OpenCut snapshot command; the
 		// token names that command so the reply's Undo reverses exactly it, and only while it is
 		// still the latest step (OpenCut's own undo reverses the same step).
@@ -1589,6 +1637,21 @@ export function KartelVideoFinisherBridge({
 			await editor.save.flush();
 			post({ type: "EDITS_APPLIED", identity: message, payload: { token, undone: true, sourceLayout: sourceLayout() } });
 			changed();
+		};
+
+		// 2026-10-27: Studio asks which of this project's exact files the editor already holds and
+		// takes those by reference instead of downloading them again; it checks each one itself.
+		const readHeldMedia = async (message: VideoFinisherHostMessage) => {
+			const files = await heldMediaFiles({
+				items: normalizedHeldMediaRequest(message.payload),
+				assets: editor.media.getAssets(),
+				load: async (id) => {
+					const asset = await storageService.loadMediaAsset({ projectId, id });
+					if (asset?.url) URL.revokeObjectURL(asset.url);
+					return asset?.file ?? null;
+				},
+			});
+			post({ type: "HELD_MEDIA", identity: message, payload: { files } });
 		};
 
 		const onMessage = (event: MessageEvent) => {
@@ -1634,6 +1697,10 @@ export function KartelVideoFinisherBridge({
 																	? undoEdits(message)
 																	: message.type === "EXPORT_CLIP"
 																		? exportClip(message)
+																		: message.type === "TRANSPORT"
+																			? transport(message)
+																		: message.type === "READ_HELD_MEDIA"
+																			? readHeldMedia(message)
 										: exportProject(message);
 			void action.catch((error) =>
 				post({
@@ -1652,10 +1719,12 @@ export function KartelVideoFinisherBridge({
 												? "BREAKDOWN_FAILED"
 												: message.type === "SELECT_RANGE"
 													? "SELECT_FAILED"
-													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS"].includes(message.type)
+													: ["SET_LAYOUT", "APPLY_EDITS", "UNDO_EDITS", "TRANSPORT"].includes(message.type)
 														? "EDITS_FAILED"
 														: message.type === "EXPORT_CLIP"
 															? "CLIP_FAILED"
+														: message.type === "READ_HELD_MEDIA"
+															? "HELD_MEDIA_FAILED"
 											: "EXPORT_FAILED",
 					identity: message,
 					payload: {
@@ -1694,15 +1763,19 @@ export function KartelVideoFinisherBridge({
 		// points from where the operator is parked, without OpenCut growing an in/out model.
 		let lastPlayheadPost = 0;
 		let lastPlayheadSeconds = -1;
+		let lastPlayheadPlaying: boolean | null = null;
 		const playhead = () => {
 			if (!identityRef.current) return;
 			const seconds = mediaTimeToSeconds({ time: editor.playback.getCurrentTime() });
 			const playing = editor.playback.getIsPlaying();
 			const now = Date.now();
-			if (playing && now - lastPlayheadPost < 200) return;
-			if (!playing && seconds === lastPlayheadSeconds) return;
+			if (playing === lastPlayheadPlaying) {
+				if (playing && now - lastPlayheadPost < 200) return;
+				if (!playing && seconds === lastPlayheadSeconds) return;
+			}
 			lastPlayheadPost = now;
 			lastPlayheadSeconds = seconds;
+			lastPlayheadPlaying = playing;
 			const sourcePositions = editor.scenes.getActiveScene().tracks.main.elements
 				.filter((element) => element.type === "video" && element.mediaId === sourceMediaIdRef.current)
 				.map((element) => breakdownSourceAtTimeline({ element, timelineSeconds: seconds }))
@@ -1710,19 +1783,35 @@ export function KartelVideoFinisherBridge({
 			post({ type: "PLAYHEAD_CHANGED", identity: identityRef.current, payload: { seconds, playing, sourceSeconds: sourcePositions.length === 1 ? sourcePositions[0] : null } });
 		};
 		window.addEventListener("message", onMessage);
+		const renderFailed = () => {
+			const failure = rendererFailure.getSnapshot();
+			if (!failure) return;
+			// Keep this frame's latest document and files available to SAVE_PROJECT.
+			// Studio checkpoints them before it replaces this poisoned WASM instance.
+			try { editor.playback.pause(); } catch { /* a trapped renderer must still report its failure */ }
+			post({
+				type: "RENDER_FAILED",
+				identity: identityRef.current ?? { nonce: bridgeNonce, projectId, revision: 0, operationId: "render-failed" },
+				payload: { error: failure.message, fatal: true, sourceVersionId: sourceMediaIdRef.current },
+			});
+		};
+		const unsubscribeRenderFailure = rendererFailure.subscribe(renderFailed);
 		post({
 			type: "EDITOR_READY",
 			identity: { nonce: bridgeNonce, projectId, revision: 0, operationId: "editor-ready" },
 			payload: { capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES] },
 		});
+		renderFailed();
 		const unsubscribers = [
 			editor.timeline.subscribe(changed),
 			editor.scenes.subscribe(changed),
 			editor.selection.subscribe(selected),
 			editor.playback.subscribe(playhead),
+			editor.playback.onUpdate(playhead),
 		];
 		return () => {
 			window.removeEventListener("message", onMessage);
+			unsubscribeRenderFailure();
 			clearKartelClipFrames();
 			previewStop?.();
 			clearRepairPreview();

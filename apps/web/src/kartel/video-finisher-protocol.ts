@@ -33,6 +33,10 @@ export const VIDEO_FINISHER_HOST_MESSAGE_TYPES = [
 	"UNDO_EDITS",
 	// RS-073: a range of the source as its own MP4, for a reference or an area edit.
 	"EXPORT_CLIP",
+	// RS-366: Studio's timeline head plays and pauses the editor (capability `transport`).
+	"TRANSPORT",
+	// 2026-10-27: which of the project's exact files this editor already holds (capability `held-media`).
+	"READ_HELD_MEDIA",
 ] as const;
 
 export type VideoFinisherHostMessage = {
