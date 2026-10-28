@@ -139,15 +139,18 @@ class WasmCompositor {
 			name: "textureUploadPixels",
 			by: texture.width * texture.height,
 		});
+		// Browser decoding/canvas conversion can fail transiently before WASM is
+		// entered. Only a failure at the compositor boundary poisons its instance.
+		const source = ensureOffscreenCanvas({
+			source: texture.source,
+			width: texture.width,
+			height: texture.height,
+			label: `texture upload ${texture.id}`,
+		});
 		rendererFailure.run(() =>
 			uploadTexture({
 				id: texture.id,
-				source: ensureOffscreenCanvas({
-					source: texture.source,
-					width: texture.width,
-					height: texture.height,
-					label: `texture upload ${texture.id}`,
-				}),
+				source,
 				width: texture.width,
 				height: texture.height,
 			}),
