@@ -3,6 +3,7 @@ import type { AnyBaseNode } from "./nodes/base-node";
 import { scalePreviewFrame, supportsScaledPreview } from "@/preview/resolution";
 import { buildFrameDescriptor } from "./compositor/frame-descriptor";
 import { wasmCompositor } from "./compositor/wasm-compositor";
+import { rendererFailure } from "./compositor/renderer-failure";
 import { resolveRenderTree } from "./resolve";
 import {
 	measureSpanAsync,
@@ -69,6 +70,7 @@ export class CanvasRenderer {
 		onRendered?: () => void | Promise<void>;
 	}) {
 		const current = renderTail.then(async () => {
+			rendererFailure.run(() => {});
 			await this.renderFrame({ node, time });
 			// CanvasSource.add and snapshots must read the shared canvas before the
 			// next renderer is allowed to resize or replace its pixels.

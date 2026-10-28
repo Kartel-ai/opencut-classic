@@ -67,6 +67,7 @@ import type { Command, CommandResult } from "@/commands/base-command";
 import { canJoinPieces, joinedPiece } from "./video-finisher-join";
 import { soundtrackTracks } from "./video-finisher-soundtrack";
 import { heldMediaFiles, normalizedHeldMediaRequest } from "./video-finisher-held-media";
+import { rendererFailure } from "@/services/renderer/compositor/renderer-failure";
 
 // DF-049b: one breakdown apply (a split or merge with its names and layers) as one history step.
 // Whichever undo reverses it, Studio's Undo through UNDO_EDITS or OpenCut's own Ctrl+Z inside the
@@ -1774,11 +1775,25 @@ export function KartelVideoFinisherBridge({
 			post({ type: "PLAYHEAD_CHANGED", identity: identityRef.current, payload: { seconds, playing, sourceSeconds: sourcePositions.length === 1 ? sourcePositions[0] : null } });
 		};
 		window.addEventListener("message", onMessage);
+		const renderFailed = () => {
+			const failure = rendererFailure.getSnapshot();
+			if (!failure) return;
+			// Keep this frame's latest document and files available to SAVE_PROJECT.
+			// Studio checkpoints them before it replaces this poisoned WASM instance.
+			try { editor.playback.pause(); } catch { /* a trapped renderer must still report its failure */ }
+			post({
+				type: "RENDER_FAILED",
+				identity: identityRef.current ?? { nonce: bridgeNonce, projectId, revision: 0, operationId: "render-failed" },
+				payload: { error: failure.message, fatal: true, sourceVersionId: sourceMediaIdRef.current },
+			});
+		};
+		const unsubscribeRenderFailure = rendererFailure.subscribe(renderFailed);
 		post({
 			type: "EDITOR_READY",
 			identity: { nonce: bridgeNonce, projectId, revision: 0, operationId: "editor-ready" },
 			payload: { capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES] },
 		});
+		renderFailed();
 		const unsubscribers = [
 			editor.timeline.subscribe(changed),
 			editor.scenes.subscribe(changed),
@@ -1787,6 +1802,7 @@ export function KartelVideoFinisherBridge({
 		];
 		return () => {
 			window.removeEventListener("message", onMessage);
+			unsubscribeRenderFailure();
 			clearKartelClipFrames();
 			previewStop?.();
 			clearRepairPreview();
