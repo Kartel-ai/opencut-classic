@@ -1763,15 +1763,19 @@ export function KartelVideoFinisherBridge({
 		// points from where the operator is parked, without OpenCut growing an in/out model.
 		let lastPlayheadPost = 0;
 		let lastPlayheadSeconds = -1;
+		let lastPlayheadPlaying: boolean | null = null;
 		const playhead = () => {
 			if (!identityRef.current) return;
 			const seconds = mediaTimeToSeconds({ time: editor.playback.getCurrentTime() });
 			const playing = editor.playback.getIsPlaying();
 			const now = Date.now();
-			if (playing && now - lastPlayheadPost < 200) return;
-			if (!playing && seconds === lastPlayheadSeconds) return;
+			if (playing === lastPlayheadPlaying) {
+				if (playing && now - lastPlayheadPost < 200) return;
+				if (!playing && seconds === lastPlayheadSeconds) return;
+			}
 			lastPlayheadPost = now;
 			lastPlayheadSeconds = seconds;
+			lastPlayheadPlaying = playing;
 			const sourcePositions = editor.scenes.getActiveScene().tracks.main.elements
 				.filter((element) => element.type === "video" && element.mediaId === sourceMediaIdRef.current)
 				.map((element) => breakdownSourceAtTimeline({ element, timelineSeconds: seconds }))
@@ -1803,6 +1807,7 @@ export function KartelVideoFinisherBridge({
 			editor.scenes.subscribe(changed),
 			editor.selection.subscribe(selected),
 			editor.playback.subscribe(playhead),
+			editor.playback.onUpdate(playhead),
 		];
 		return () => {
 			window.removeEventListener("message", onMessage);

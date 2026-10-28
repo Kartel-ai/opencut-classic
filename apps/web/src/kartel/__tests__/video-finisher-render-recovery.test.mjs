@@ -68,3 +68,54 @@ test("a startup renderer failure is reported again with the loaded saved revisio
 	assert.equal(posts[2].identity.operationId, "load-saved");
 	assert.equal(posts[2].payload.fatal, true);
 });
+
+test("real playback ticks stream to Studio while pause, resume and cleanup remain exact", () => {
+	const managerSource = readFileSync(new URL("../../core/managers/playback-manager.ts", import.meta.url), "utf8");
+	const managerCode = ts.transpileModule(managerSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+	const ticksPerSecond = 120_000;
+	let now = 1000;
+	let sequence = 0;
+	const frames = new Map();
+	const wasm = {
+		ZERO_MEDIA_TIME: 0,
+		addMediaTime: ({ a, b }) => a + b,
+		clampMediaTime: ({ time, min, max }) => Math.max(min, Math.min(max, time)),
+		mediaTimeFromSeconds: ({ seconds }) => Math.round(seconds * ticksPerSecond),
+		roundFrameTime: ({ time }) => Math.round(time / 5000) * 5000,
+	};
+	const PlaybackManager = new Function("require", "exports", "performance", "requestAnimationFrame", "cancelAnimationFrame", `${managerCode}; return exports.PlaybackManager;`)(
+		() => wasm, {}, { now: () => now }, (callback) => { const id = ++sequence; frames.set(id, callback); return id; }, (id) => frames.delete(id),
+	);
+	const editor = { project: { getActive: () => ({ settings: { fps: { numerator: 24, denominator: 1 } } }) },
+		timeline: { getTotalDuration: () => 15 * ticksPerSecond, subscribe: () => () => {} },
+		scenes: { getActiveScene: () => ({ tracks: { main: { elements: [] } } }), subscribe: () => () => {} }, selection: { subscribe: () => () => {} } };
+	editor.playback = new PlaybackManager(editor);
+	const posts = [];
+	const playheadSource = ts.transpileModule(bridge.slice(bridge.indexOf("let lastPlayheadPost ="), bridge.indexOf('window.addEventListener("message", onMessage)')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+	const subscriptionsStart = bridge.indexOf("const unsubscribers = [");
+	const subscriptionsSource = bridge.slice(subscriptionsStart, bridge.indexOf("];", subscriptionsStart) + 2);
+	const cleanup = new Function("editor", "identityRef", "sourceMediaIdRef", "post", "mediaTimeToSeconds", "breakdownSourceAtTimeline", "Date", "changed", "selected", `${playheadSource}\n${subscriptionsSource}; return () => unsubscribers.forEach(unsubscribe => unsubscribe());`)(
+		editor, { current: { nonce: "current-frame", projectId: "saved-project", revision: 3, operationId: "load-saved" } }, { current: "source" },
+		(message) => posts.push(message), ({ time }) => time / ticksPerSecond, () => null, { now: () => now }, () => {}, () => {},
+	);
+	const tick = (at) => { now = at; const [id, callback] = frames.entries().next().value; frames.delete(id); callback(); };
+	editor.playback.play();
+	tick(1250);
+	assert.equal(posts.length, 2, "the actual RAF update channel reaches the bridge without a seek or pause");
+	assert.equal(posts[1].type, "PLAYHEAD_CHANGED");
+	assert.equal(posts[1].identity.revision, 3);
+	assert.equal(posts[1].payload.seconds, 0.25);
+	tick(1400);
+	assert.equal(posts.length, 2, "continuous ticks stay bounded by the existing 200 ms throttle");
+	tick(1500);
+	assert.equal(posts[2].payload.seconds, 0.5);
+	editor.playback.pause();
+	assert.equal(posts.at(-1).payload.playing, false, "pausing at the last posted frame still changes Studio's transport state");
+	editor.playback.play();
+	assert.equal(posts.at(-1).payload.playing, true, "a prompt resume is never hidden by the tick throttle");
+	cleanup();
+	const count = posts.length;
+	tick(1750);
+	editor.playback.pause();
+	assert.equal(posts.length, count, "cleanup removes both the update and discrete playback listeners");
+});
