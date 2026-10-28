@@ -47,3 +47,24 @@ test("failed checkpoint never supplies a stale project as safe to reopen", async
 	await assert.rejects(save({ payload: {} }), /storage unavailable/);
 	assert.equal(posts.length, 0);
 });
+
+test("a startup renderer failure is reported again with the loaded saved revision", async () => {
+	const loadSource = ts.transpileModule(bridge.slice(bridge.indexOf("const load = async"), bridge.indexOf("const save = async")), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+	const reportSource = ts.transpileModule(bridge.slice(bridge.indexOf("const renderFailed = () =>"), bridge.indexOf("const unsubscribeRenderFailure =")), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+	const build = new Function("editor", "OPEN_CUT_COMMIT", "projectId", "normalizedProjectDocument", "applyingRef", "ensureSource", "sourceMediaIdRef", "identityRef", "post", "sourceLayout", "mediaTimeToSeconds", "VIDEO_FINISHER_EDITOR_CAPABILITIES", "rendererFailure", "bridgeNonce", `${reportSource}\n${loadSource}; return { load, renderFailed };`);
+	const failure = createRendererFailureState();
+	assert.throws(() => failure.run(() => { throw new WebAssembly.RuntimeError("startup trap"); }));
+	const posts = [];
+	const identity = { nonce: "current-frame", projectId: "saved-project", revision: 3, operationId: "load-saved", payload: { source: { name: "saved.mp4" } } };
+	const { load, renderFailed } = build(
+		{ playback: { pause() {}, getCurrentTime: () => 0 }, project: { getActive: () => ({ metadata: { name: "saved.mp4" } }) }, scenes: { getActiveScene: () => ({ tracks: { main: { elements: [{ mediaId: "source-v1" }] }, overlay: [] } }) } },
+		"a".repeat(40), "saved-project", () => null, { current: false }, async () => ({ id: "source-v1" }), { current: null }, { current: null },
+		(message) => posts.push(message), () => ({}), ({ time }) => time, [], failure, "current-frame",
+	);
+	renderFailed();
+	assert.equal(posts[0].identity.revision, 0, "before a host request the bridge only has its startup identity");
+	await load(identity);
+	assert.deepEqual(posts.map(({ type, identity }) => [type, identity.revision]), [["RENDER_FAILED", 0], ["PROJECT_LOADED", 3], ["RENDER_FAILED", 3]]);
+	assert.equal(posts[2].identity.operationId, "load-saved");
+	assert.equal(posts[2].payload.fatal, true);
+});

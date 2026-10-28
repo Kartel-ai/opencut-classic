@@ -935,6 +935,10 @@ export function KartelVideoFinisherBridge({
 						capabilities: [...VIDEO_FINISHER_EDITOR_CAPABILITIES],
 					},
 				});
+				// An initialization trap can precede the first host request, when
+				// only revision 0 is known. Report it with this accepted LOAD identity
+				// so a saved cut's host can offer recovery without weakening validation.
+				renderFailed();
 			} finally {
 				applyingRef.current = false;
 			}
